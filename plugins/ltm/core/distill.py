@@ -54,6 +54,7 @@ class DistilledFact:
     text: str
     supersedes: list[str] = field(default_factory=list)
     title: str = ""
+    subtitle: str = ""
     narrative: str = ""
     files: list[str] = field(default_factory=list)
     type: str = ""
@@ -64,13 +65,14 @@ class DistilledFact:
 class Observation:
     """A typed group of atomic facts plus one shared narrative (the card unit).
 
-    Facts remain the embedded retrieval unit; type/title/narrative/files are card
-    metadata shared across the group.
+    Facts remain the embedded retrieval unit; type/title/subtitle/narrative/files
+    are card metadata shared across the group.
     """
 
     facts: list[str]
     type: str = _DEFAULT_TYPE
     title: str = ""
+    subtitle: str = ""
     narrative: str = ""
     files: list[str] = field(default_factory=list)
     supersedes: list[str] = field(default_factory=list)
@@ -136,14 +138,17 @@ Group related facts into observations. Output ONLY a JSON object of the form
 {{"observations": [ ... ]}}. Each observation:
   {{"type": "<one of: decision|bugfix|feature|refactor|discovery|change>",
     "title": "<short headline for the group, <=60 chars>",
-    "facts": ["<atomic, self-contained fact in present tense, <=200 chars>", ...],
-    "narrative": "<1-3 sentences of why/how and detail worth keeping, <=500 chars>",
+    "subtitle": "<one full sentence summarising the observation, <=160 chars>",
+    "facts": ["<atomic, self-contained fact in present tense>", ... up to 7],
+    "narrative": "<3-6 sentences of the what/why/how, with concrete detail, names, and outcomes>",
     "files": ["<repo-relative path this observation concerns>", ...],
     "supersedes": ["<id of an existing fact this observation makes outdated>", ...]}}
 
-Each string in `facts` is an atomic memory used for retrieval, so keep them
-self-contained; `title`/`narrative`/`files` are shared context for the group.
-Use [] / "" when a field does not apply. One observation may hold a single fact.
+Each string in `facts` is an atomic memory used for retrieval, so keep each one
+self-contained and specific; capture every distinct point (up to 7). `title` is a
+terse headline, `subtitle` is a readable one-sentence summary, and `narrative` is
+a fuller prose explanation — write all three. Use [] / "" when a field truly does
+not apply. One observation may hold a single fact.
 
 Choose `type` by intent:
 - feature   : new capability or feature added
@@ -239,6 +244,7 @@ def parse_observations(output: str) -> list[Observation]:
                 facts=facts,
                 type=typ if typ in _TYPES else _DEFAULT_TYPE,
                 title=str(item.get("title", "")).strip(),
+                subtitle=str(item.get("subtitle", "")).strip(),
                 narrative=str(item.get("narrative", "")).strip(),
                 files=_str_list(item.get("files")),
                 supersedes=[s for s in _str_list(item.get("supersedes")) if s.lower() not in _NON_IDS],
@@ -267,6 +273,7 @@ def observations_to_facts(observations: list[Observation]) -> list[DistilledFact
                     text=fact,
                     supersedes=obs.supersedes if index == 0 else [],
                     title=obs.title,
+                    subtitle=obs.subtitle,
                     narrative=obs.narrative,
                     files=obs.files,
                     type=obs.type,

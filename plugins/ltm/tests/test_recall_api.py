@@ -307,16 +307,18 @@ class DistillStructuredTests(unittest.TestCase):
     def test_parse_observations_and_expand_to_grouped_facts(self):
         from core.distill import observations_to_facts, parse_observations
 
-        raw = ('{"observations":[{"type":"feature","title":"Add X",'
+        raw = ('{"observations":[{"type":"feature","title":"Add X","subtitle":"adds the X capability",'
                '"facts":["did a","did b"],"narrative":"why","files":["a.py"],"supersedes":[]}]}')
         obs = parse_observations(raw)
         self.assertEqual(len(obs), 1)
         self.assertEqual(obs[0].type, "feature")
+        self.assertEqual(obs[0].subtitle, "adds the X capability")
         self.assertEqual(obs[0].facts, ["did a", "did b"])
         facts = observations_to_facts(obs)
         self.assertEqual([f.text for f in facts], ["did a", "did b"])
         self.assertEqual(len({f.observation_id for f in facts}), 1)  # grouped under one card
         self.assertTrue(all(f.type == "feature" and f.narrative == "why" for f in facts))
+        self.assertTrue(all(f.subtitle == "adds the X capability" for f in facts))
         self.assertEqual([f.supersedes for f in facts], [[], []])  # obs had none
 
     def test_parse_observations_defaults_unknown_type(self):

@@ -77,6 +77,7 @@ def add_records(
             importance=min(1.0, len(record.text) / 240.0),
             created_at=now,
             title=record.title,
+            subtitle=record.subtitle,
             narrative=record.narrative,
             files=record.files,
             type=record.type,

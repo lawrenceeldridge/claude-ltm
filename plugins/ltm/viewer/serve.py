@@ -61,7 +61,8 @@ PAGE = """<!doctype html>
   .toggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
             border:1px solid var(--border2); border-radius:6px; padding:3px 8px; cursor:pointer; }
   .toggle.active { color:var(--title); border-color:#58a6ff; }
-  .card .title { font-weight:650; color:var(--title); font-size:15px; margin-bottom:6px; }
+  .card .title { font-weight:650; color:var(--title); font-size:15px; margin-bottom:2px; }
+  .subtitle { color:#adbac7; margin-bottom:2px; }
   .facts { margin:0; padding-inline-start:18px; }
   .facts li { margin:3px 0; }
   .narr { color:#adbac7; white-space:pre-wrap; }
@@ -130,6 +131,7 @@ function cardHTML(c, flash) {
   const when = new Date(c.created*1000).toISOString().slice(0,16).replace('T',' ');
   const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
   const title = c.title ? `<div class="title">${esc(c.title)}</div>` : '';
+  const subtitle = c.subtitle ? `<div class="subtitle">${esc(c.subtitle)}</div>` : '';
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
   if (c.kind === 'session_summary') {
@@ -139,7 +141,7 @@ function cardHTML(c, flash) {
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
   const toggles = `<div class="toggles"><button class="toggle" data-v="facts">facts</button>`
     + (c.narrative ? `<button class="toggle" data-v="narr">narrative</button>` : '') + `</div>`;
-  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${toggles}</div>${title}${facts}${narr}${filesHTML(c)}${meta}</div>`;
+  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${toggles}</div>${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div>`;
 }
 async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
@@ -225,6 +227,7 @@ def _card_from_rows(rows, score=None) -> dict:
     return {
         "type": head["type"] or "",
         "title": head["title"],
+        "subtitle": head["subtitle"],
         "narrative": head["narrative"],
         "files": files,
         "kind": head["kind"],

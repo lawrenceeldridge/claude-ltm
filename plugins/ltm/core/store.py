@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS facts (
   kind          TEXT,
   text          TEXT NOT NULL,
   title         TEXT,
+  subtitle      TEXT,
   narrative     TEXT,
   files         TEXT,
   type          TEXT,
@@ -144,11 +145,15 @@ def _v4_observations(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_facts_observation ON facts(observation_id)")
 
 
+def _v5_subtitle(db: sqlite3.Connection) -> None:
+    _add_columns(db, [("subtitle", "subtitle TEXT")])
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
-_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts, _v4_observations]
+_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -221,6 +226,7 @@ class Store:
         importance: float,
         created_at: float | None = None,
         title: str = "",
+        subtitle: str = "",
         narrative: str = "",
         files: list[str] | None = None,
         type: str = "",
@@ -231,9 +237,9 @@ class Store:
         cur = self.db.execute(
             "INSERT OR IGNORE INTO facts "
             "(id, project_key, project_label, project_path, session_id, kind, text, "
-            " title, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
+            " title, subtitle, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
             " vec_int8, vec_bits, importance, frequency, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
             (
                 fid,
                 project["key"],
@@ -243,6 +249,7 @@ class Store:
                 kind,
                 text,
                 title or None,
+                subtitle or None,
                 narrative or None,
                 json.dumps(files) if files else None,
                 type or None,
