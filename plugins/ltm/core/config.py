@@ -74,6 +74,8 @@ class Config:
     distiller_api_key: str
     ttl_days: float
     ttl_keep_frequency: int
+    recall_min_confidence: float
+    recall_max_chars: int
     viewer_port: int
     viewer_autostart: bool
     markers: tuple[str, ...]
@@ -110,6 +112,8 @@ def get_config() -> Config:
         distiller_api_key=_opt("distiller_api_key", ""),
         ttl_days=_num(_opt("ttl_days", "0"), 0),
         ttl_keep_frequency=int(_num(_opt("ttl_keep_frequency", "3"), 3)),
+        recall_min_confidence=_num(_opt("recall_min_confidence", "0.35"), 0.35),
+        recall_max_chars=int(_num(_opt("recall_max_chars", "1200"), 1200)),
         viewer_port=int(_num(_opt("viewer_port", "7801"), 7801)),
         viewer_autostart=_opt("viewer_autostart", "true").lower() in ("1", "true", "yes", "on"),
         markers=markers,

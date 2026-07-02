@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -110,6 +110,21 @@
       "default": 0.85,
       "min": 0,
       "max": 1
+    },
+    "recall_min_confidence": {
+      "type": "number",
+      "title": "Recall confidence gate",
+      "description": "The `recall` MCP tool returns verdict=ok only when calibrated confidence reaches this; below it the verdict is low_confidence (treat facts as hints, widen the search). Higher = stricter.",
+      "default": 0.35,
+      "min": 0,
+      "max": 1
+    },
+    "recall_max_chars": {
+      "type": "number",
+      "title": "Recall response budget (chars)",
+      "description": "Character budget for facts returned by the on-demand `recall` MCP tool — highest-scoring facts are packed until it is spent.",
+      "default": 1200,
+      "min": 100
     },
     "viewer_autostart": {
       "type": "boolean",

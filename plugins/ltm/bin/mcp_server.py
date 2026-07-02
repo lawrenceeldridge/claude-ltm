@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""ltm memory MCP server — expose recall as an on-demand tool (Remote Facade).
+
+A pure-stdlib JSON-RPC 2.0 server speaking MCP over newline-delimited stdio: no
+framework, no new dependencies, preserving the plugin's local-first/zero-install
+ethos. It is a thin facade over the Service Layer (``core.service``) — it never
+reimplements ranking; it calls ``recall_structured`` / ``list_projects`` and
+formats the result.
+
+The point is the *pull* path: passive hooks push memory at the model; this lets
+the model deliberately consult memory before an expensive Grep/Glob/Task search,
+and read a calibrated confidence + verdict to decide whether to trust it.
+
+Read-only by design (recall + list_projects). Writes (save_memory) are a later,
+opt-in tier. Fails soft: a handler error returns a JSON-RPC error, never crashes
+the loop.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from collections import OrderedDict
+
+from _bootstrap import plugin_root, reexec_if_pinned
+
+reexec_if_pinned()
+ROOT = plugin_root()
+
+PROTOCOL_VERSION = "2024-11-05"
+SERVER_INFO = {"name": "ltm-memory", "version": "0.5.0"}
+
+TOOLS = [
+    {
+        "name": "recall",
+        "description": (
+            "Search this project's long-term memory for distilled facts relevant to a query. "
+            "Call this BEFORE a broad Grep/Glob/Task code search: it is a cheap vector lookup "
+            "over a compact store, not a file scan. Returns facts plus a calibrated `confidence` "
+            "(0-1) and a `verdict`: `ok` (trust the facts, skip the wider search), "
+            "`low_confidence` (hints only — widen if they don't answer), or `no_memory` "
+            "(nothing stored — do not assume prior context)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What you want to recall."},
+                "project": {
+                    "type": "string",
+                    "description": "Optional project label/path to search; defaults to the current project.",
+                },
+                "k": {"type": "integer", "description": "Max facts to return (default from config)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "list_projects",
+        "description": "List every project in the global memory store with its active-fact count. Use to discover project labels for `recall`.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+
+_CACHE_MAX = 128
+
+
+class _Engine:
+    """Lazily-initialised, process-lifetime store + embedder (warm across calls).
+
+    Recall results are cached by (project, query, k) for the server's lifetime, so
+    repeated in-session recalls skip re-embedding and re-ranking. The cache is
+    invalidated whenever the store's SQLite ``data_version`` changes — i.e. when a
+    capture in another process writes new facts — so it never serves stale memory.
+    """
+
+    def __init__(self) -> None:
+        self._ready = False
+        self._cache: OrderedDict[tuple, dict] = OrderedDict()
+        self._cache_version = -1
+
+    def _init(self) -> None:
+        if self._ready:
+            return
+        from core.config import get_config
+        from core.embedding import get_embedder
+        from core.store import Store
+
+        self.cfg = get_config()
+        self.store = Store(self.cfg.db_path)
+        self.embedder = get_embedder(self.cfg)
+        self._ready = True
+
+    def _cache_get(self, key: tuple) -> dict | None:
+        version = self.store.data_version()
+        if version != self._cache_version:
+            self._cache.clear()
+            self._cache_version = version
+        hit = self._cache.get(key)
+        if hit is not None:
+            self._cache.move_to_end(key)
+        return hit
+
+    def _cache_put(self, key: tuple, value: dict) -> None:
+        self._cache[key] = value
+        self._cache.move_to_end(key)
+        while len(self._cache) > _CACHE_MAX:
+            self._cache.popitem(last=False)
+
+    def _project(self, ref: str | None):
+        from core.project import resolve_project
+
+        current = resolve_project(None, self.cfg.markers)
+        if not ref:
+            return current
+        needle = ref.lower()
+        for row in self.store.projects():
+            if needle in (row["project_label"] or "").lower() or needle in (row["project_path"] or "").lower():
+                return {"key": row["project_key"], "path": row["project_path"], "label": row["project_label"]}
+        return current
+
+    def recall(self, args: dict) -> dict:
+        from core.service import recall_structured
+
+        self._init()
+        query = (args.get("query") or "").strip()
+        if not query:
+            return {"verdict": "no_memory", "facts": [], "error": "empty query"}
+        project = self._project(args.get("project"))
+        k = args.get("k")
+        key = (project["key"], query, k)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        result = recall_structured(self.store, self.embedder, self.cfg, project, query, k=k)
+        self._cache_put(key, result)
+        return result
+
+    def list_projects(self, _args: dict) -> dict:
+        self._init()
+        projects = [
+            {"label": row["project_label"], "path": row["project_path"], "facts": row["c"]}
+            for row in self.store.projects()
+        ]
+        return {"projects": projects, "count": len(projects)}
+
+
+ENGINE = _Engine()
+
+
+def _tool_call(name: str, args: dict) -> dict:
+    if name == "recall":
+        payload = ENGINE.recall(args)
+    elif name == "list_projects":
+        payload = ENGINE.list_projects(args)
+    else:
+        raise ValueError(f"unknown tool {name!r}")
+    return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]}
+
+
+def _handle(request: dict) -> dict | None:
+    """Dispatch one JSON-RPC request. Returns a response, or None for notifications."""
+    method = request.get("method")
+    req_id = request.get("id")
+
+    if method == "initialize":
+        result = {
+            "protocolVersion": (request.get("params") or {}).get("protocolVersion", PROTOCOL_VERSION),
+            "capabilities": {"tools": {}},
+            "serverInfo": SERVER_INFO,
+        }
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    elif method == "tools/call":
+        params = request.get("params") or {}
+        result = _tool_call(params.get("name"), params.get("arguments") or {})
+    elif method == "ping":
+        result = {}
+    elif method is not None and method.startswith("notifications/"):
+        return None  # notifications get no response
+    else:
+        if req_id is None:
+            return None
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"method not found: {method}"}}
+
+    if req_id is None:
+        return None
+    return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+
+def _write(message: dict) -> None:
+    sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def main() -> int:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        try:
+            response = _handle(request)
+        except Exception as exc:  # fail-soft: report, keep serving
+            response = {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {"code": -32603, "message": str(exc)},
+            }
+            if request.get("id") is None:
+                response = None
+        if response is not None:
+            _write(response)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

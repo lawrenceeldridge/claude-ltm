@@ -38,6 +38,18 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project_key, status);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);
+
+CREATE TABLE IF NOT EXISTS recall_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          REAL,
+  project_key TEXT,
+  query       TEXT,
+  returned    INTEGER,
+  top_sim     REAL,
+  confidence  REAL,
+  verdict     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recall_project ON recall_events(project_key);
 """
 
 _MIGRATIONS = [
@@ -201,3 +213,39 @@ class Store:
         cur = self.db.execute("DELETE FROM facts WHERE project_key = ?", (project_key,))
         self.db.commit()
         return cur.rowcount
+
+    def log_recall(
+        self,
+        project_key: str,
+        query: str,
+        *,
+        returned: int,
+        top_sim: float,
+        confidence: float,
+        verdict: str,
+        now: float | None = None,
+    ) -> None:
+        """Append one recall to the telemetry ledger (feeds stats and future tuning). Best-effort."""
+        try:
+            self.db.execute(
+                "INSERT INTO recall_events (ts, project_key, query, returned, top_sim, confidence, verdict) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (now if now is not None else time.time(), project_key, query, returned, top_sim, confidence, verdict),
+            )
+            self.db.commit()
+        except sqlite3.Error:
+            pass
+
+    def recall_stats(self, project_key: str | None = None) -> dict:
+        """Aggregate recall telemetry: call count and per-verdict breakdown."""
+        where = "WHERE project_key = ?" if project_key else ""
+        params = (project_key,) if project_key else ()
+        total = self.db.execute(f"SELECT COUNT(*) FROM recall_events {where}", params).fetchone()[0]
+        rows = self.db.execute(
+            f"SELECT verdict, COUNT(*) AS c FROM recall_events {where} GROUP BY verdict", params
+        ).fetchall()
+        return {"total": total, "by_verdict": {row["verdict"]: row["c"] for row in rows}}
+
+    def data_version(self) -> int:
+        """SQLite change counter — bumps on every commit by another connection (cache-invalidation signal)."""
+        return self.db.execute("PRAGMA data_version").fetchone()[0]

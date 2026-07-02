@@ -10,6 +10,8 @@ Subcommands:
   prune       delete all memory for the current project
   daemon      run the resident daemon (keeps the embedder warm)
   viewer      launch the localhost viewer
+  stats       recall telemetry + estimated searches/tokens saved
+  drift       pin/check the embedding-drift canary
   demo        capture sample facts, then recall against them (end-to-end proof)
 """
 
@@ -164,6 +166,42 @@ def cmd_viewer(args) -> int:
     return 0
 
 
+_TOKENS_SAVED_PER_OK = 1200  # heuristic: an `ok` recall spares a grep + a couple of file reads
+
+
+def cmd_stats(args) -> int:
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    scope = None if args.all else _project(cfg, args)["key"]
+    recall = store.recall_stats(scope)
+    ok = recall["by_verdict"].get("ok", 0)
+    where = "all projects" if args.all else _project(cfg, args)["label"]
+    print(f"scope       : {where}")
+    print(f"facts       : {store.count()} active")
+    print(f"recalls     : {recall['total']} total  {recall['by_verdict']}")
+    print(f"searches saved (est.) : {ok}  (~{ok * _TOKENS_SAVED_PER_OK:,} tokens, heuristic)")
+    store.close()
+    return 0
+
+
+def cmd_drift(_args) -> int:
+    from core.drift import check, pin
+
+    cfg = get_config()
+    embedder = get_embedder(cfg)
+    model_id = f"{cfg.embedding}:{cfg.embedding_model or 'default'}:{embedder.dim}"
+    result = check(embedder, cfg.data_dir, model_id)
+    if result["status"] == "unpinned":
+        pin(embedder, cfg.data_dir, model_id)
+        print(f"pinned embedding canary for {model_id}")
+        return 0
+    print(f"drift status: {result['status']}")
+    for key in ("mean_similarity", "threshold", "pinned_model", "current_model", "hint"):
+        if result.get(key):
+            print(f"  {key}: {result[key]}")
+    return 1 if result["status"] in ("drift", "model_changed", "dim_changed") else 0
+
+
 def cmd_eval(args) -> int:
     from bench.run_eval import main as run_eval
 
@@ -245,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ensure", action="store_true", help="ensure the resident viewer is up (detached), then open it")
     p.add_argument("--stop", action="store_true", help="stop the resident viewer")
     p.set_defaults(func=cmd_viewer)
+
+    p = sub.add_parser("stats", help="recall telemetry + estimated searches/tokens saved")
+    add_cwd(p)
+    p.add_argument("--all", action="store_true", help="aggregate across every project")
+    p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("drift", help="pin/check the embedding-drift canary")
+    p.set_defaults(func=cmd_drift)
 
     p = sub.add_parser("eval", help="benchmark embedding backends on a labelled recall set")
     p.add_argument("--backends", default="hash", help="comma-separated: hash,fastembed")

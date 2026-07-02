@@ -11,11 +11,13 @@ from __future__ import annotations
 import time
 
 from core.config import Config
+from core.confidence import compute_confidence
 from core.distill import DistilledFact, get_distiller
 from core.embedding import EmbeddingGateway
+from core.lexical import has_overlap
 from core.project import Project
 from core.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
-from core.recall import render_block, search
+from core.recall import render_block, search, search_fused
 from core.store import Store
 from core.transcript import extract_text
 
@@ -139,3 +141,85 @@ def recall_core_block(
     rows = store.recent(project["key"], cfg.core_size)
     hits = [(1.0, row) for row in rows]
     return render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+
+
+_GUIDANCE = {
+    "ok": "Strong recall — trust these facts; a broad code search is likely unnecessary.",
+    "low_confidence": "Weak recall — treat these as hints only; widen to Grep/Glob if they don't answer the question.",
+    "no_memory": "No stored memory for this query — do not assume prior context; proceed with a normal search.",
+}
+
+
+def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int]:
+    """Greedy budget pack: highest-ranked facts first, until the char budget is spent."""
+    packed: list[dict] = []
+    used = 0
+    for _score, sim, row in hits:
+        text = row["text"]
+        if packed and used + len(text) > max_chars:
+            continue
+        packed.append(
+            {
+                "text": text,
+                "similarity": round(float(sim), 4),
+                "kind": row["kind"],
+                "frequency": row["frequency"] or 1,
+            }
+        )
+        used += len(text)
+    return packed, len(hits) - len(packed)
+
+
+def recall_structured(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    query: str,
+    *,
+    k: int | None = None,
+    max_chars: int | None = None,
+) -> dict:
+    """Recall as a structured, confidence-gated result for on-demand callers.
+
+    Unlike ``recall_prompt_block`` (which renders an injection string), this returns
+    a JSON-friendly dict carrying a calibrated ``confidence`` and a ``verdict``
+    (ok / low_confidence / no_memory) so the caller can decide whether to trust
+    memory or fall back to a wider, more expensive search. Ranking is rank-fusion
+    (``search_fused``); confidence reads the cosine similarities carried through it.
+    Never raises on an empty store — it returns an explicit no_memory verdict.
+    """
+    max_chars = cfg.recall_max_chars if max_chars is None else max_chars
+    hits = search_fused(store, embedder, project, query, cfg, k=k)
+    sims = [sim for _score, sim, _row in hits]
+    identity = has_overlap(query, hits[0][2]["text"]) if hits else None
+    confidence = compute_confidence(sims, has_identity_match=identity)["confidence"]
+
+    if not hits:
+        verdict = "no_memory"
+    elif confidence < cfg.recall_min_confidence:
+        verdict = "low_confidence"
+    else:
+        verdict = "ok"
+
+    facts, dropped = _pack_facts(hits, max_chars)
+    result = {
+        "query": query,
+        "project": project["label"],
+        "verdict": verdict,
+        "confidence": confidence,
+        "guidance": _GUIDANCE[verdict],
+        "facts": facts,
+        "returned": len(facts),
+        "matched": len(hits),
+        "dropped": dropped,
+    }
+    store.log_recall(
+        project["key"],
+        query,
+        returned=len(facts),
+        top_sim=sims[0] if sims else 0.0,
+        confidence=confidence,
+        verdict=verdict,
+    )
+    return result

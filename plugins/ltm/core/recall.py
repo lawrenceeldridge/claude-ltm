@@ -14,12 +14,16 @@ import time
 
 from core.config import Config
 from core.embedding import EmbeddingGateway
+from core.fusion import Channel, fuse
+from core.lexical import token_set
 from core.project import Project
 from core.quantize import cosine, dequantize_int8
 from core.scoring import frequency_boost, priority, recency_decay
 from core.store import Store
 
 Hit = tuple[float, sqlite3.Row]
+# (fused_score, cosine_similarity, row) — fusion decides order; similarity feeds confidence.
+FusedHit = tuple[float, float, sqlite3.Row]
 
 
 def _row_vec(row: sqlite3.Row) -> list[float]:
@@ -67,6 +71,63 @@ def search(
         scored += _score(others, query_vec, cfg, now, min_sim, 0.9)
     scored.sort(key=lambda hit: hit[0], reverse=True)
     return scored[:k]
+
+
+def search_fused(
+    store: Store,
+    embedder: EmbeddingGateway,
+    project: Project,
+    query: str,
+    cfg: Config,
+    *,
+    k: int | None = None,
+    min_sim: float | None = None,
+) -> list[FusedHit]:
+    """Rank facts by Weighted Reciprocal Rank fusion of four channels.
+
+    A candidate qualifies if it clears the similarity floor *or* shares a content
+    token with the query — so keyword overlap rescues facts a weak embedder ranks
+    below the gate. Returns ``(fused_score, cosine_similarity, row)`` in fused
+    order; the similarity is carried through so confidence stays interpretable
+    regardless of fused-score magnitude.
+    """
+    k = cfg.top_k if k is None else k
+    min_sim = cfg.min_sim if min_sim is None else min_sim
+    query_vec = embedder.embed_query(query)
+    qdim = len(query_vec)
+    query_tokens = token_set(query)
+
+    candidates: dict[str, tuple[float, int, sqlite3.Row]] = {}
+    for row in store.active_rows_for_project(project["key"]):
+        if row["dim"] and row["dim"] != qdim:
+            continue
+        sim = cosine(query_vec, _row_vec(row))
+        overlap = len(query_tokens & token_set(row["text"]))
+        if sim < min_sim and overlap == 0:
+            continue
+        candidates[row["id"]] = (sim, overlap, row)
+
+    if not candidates:
+        return []
+
+    def ranked_by(key, predicate=lambda v: True) -> list[str]:
+        items = [(fid, key(v)) for fid, v in candidates.items() if predicate(v)]
+        items.sort(key=lambda x: x[1], reverse=True)
+        return [fid for fid, _ in items]
+
+    channels = [
+        Channel("similarity", ranked_by(lambda v: v[0], lambda v: v[0] > 0)),
+        Channel("lexical", ranked_by(lambda v: v[1], lambda v: v[1] > 0)),
+        Channel("recency", ranked_by(lambda v: v[2]["last_seen"] or v[2]["created_at"])),
+        Channel("frequency", ranked_by(lambda v: v[2]["frequency"] or 1)),
+    ]
+
+    fused = fuse(channels)
+    out: list[FusedHit] = []
+    for entry in fused[:k]:
+        sim, _overlap, row = candidates[entry.fact_id]
+        out.append((entry.score, sim, row))
+    return out
 
 
 def render_block(header: str, hits: list[Hit], max_chars: int) -> str:

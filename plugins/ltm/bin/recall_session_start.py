@@ -18,6 +18,13 @@ from _bootstrap import plugin_root, reexec_if_pinned
 reexec_if_pinned()
 ROOT = plugin_root()
 
+MEMORY_FIRST_POLICY = (
+    "[ltm] Memory-first: before a broad Grep/Glob/Task code search, call the `recall` tool "
+    "(ltm-memory MCP server) with your search intent. If it returns verdict=ok, trust those "
+    "facts and skip the wider search; if low_confidence or no_memory, then widen. Recall is a "
+    "cheap store lookup — far cheaper than scanning files."
+)
+
 
 def main() -> int:
     try:
@@ -57,14 +64,14 @@ def main() -> int:
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-        if cfg.core_size <= 0:
-            return 0
         project = resolve_project(cwd, cfg.markers)
         store = Store(cfg.db_path)
-        block = recall_core_block(store, cfg, project)
+        block = recall_core_block(store, cfg, project) if cfg.core_size > 0 else ""
         store.close()
+        parts = [MEMORY_FIRST_POLICY]
         if block:
-            print(json.dumps({"additionalContext": block}))
+            parts.append(block)
+        print(json.dumps({"additionalContext": "\n\n".join(parts)}))
     except Exception as exc:  # fail-open backstop
         print(f"[ltm] core recall skipped: {exc}", file=sys.stderr)
     return 0
