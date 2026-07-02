@@ -59,6 +59,7 @@ class DistilledFact:
     files: list[str] = field(default_factory=list)
     type: str = ""
     observation_id: str = ""
+    degraded: bool = False  # produced by the heuristic fallback, not the LLM — eligible for re-distillation
 
 
 @dataclass
@@ -125,7 +126,7 @@ class Distiller(ABC):
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        return [DistilledFact(fact, type=_DEFAULT_TYPE) for fact in heuristic_facts(text)]
+        return [DistilledFact(fact, type=_DEFAULT_TYPE, degraded=True) for fact in heuristic_facts(text)]
 
 
 _PROMPT = """You extract durable long-term memory from a coding assistant session.

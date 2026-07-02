@@ -8,6 +8,7 @@ Write side (capture) is heavy and runs off the interactive path. Read side
 
 from __future__ import annotations
 
+import json
 import time
 
 from core.config import Config
@@ -103,6 +104,11 @@ def add_facts(
     )
 
 
+# Distillers that call an LLM (and so can transiently fail to the heuristic). A
+# heuristic-only install never recovers, so its degraded output is not queued.
+_LLM_DISTILLERS = {"claude", "llm", "ollama", "http", "openai"}
+
+
 def capture_text(
     store: Store,
     embedder: EmbeddingGateway,
@@ -114,7 +120,50 @@ def capture_text(
     distiller = get_distiller(cfg)
     existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
     records = distiller.distill(text, existing)
-    return add_records(store, embedder, cfg, project, session_id, records)
+    inserted = add_records(store, embedder, cfg, project, session_id, records)
+    # If an LLM distiller degraded to the heuristic (unreachable / timed out), park the
+    # raw delta so a later healthy capture can re-distil it and replace these facts.
+    if records and cfg.distiller in _LLM_DISTILLERS and all(r.degraded for r in records):
+        fact_ids = [store.fact_id(project["key"], r.text) for r in records]
+        store.enqueue_redistill(project["key"], session_id, text, fact_ids)
+    return inserted
+
+
+def recover_pending(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    *,
+    limit: int = 3,
+    max_attempts: int = 6,
+) -> int:
+    """Re-distil parked deltas with the LLM; on success replace their heuristic facts.
+
+    Runs at the head of every incremental capture. Cheap when the queue is empty (no
+    LLM call). Because the queue is shared, a healthy session recovers junk that a
+    stale or offline one produced; entries that keep failing are dropped after
+    ``max_attempts`` so a genuinely un-parseable delta can't retry forever.
+    """
+    if cfg.distiller not in _LLM_DISTILLERS:
+        return 0
+    distiller = get_distiller(cfg)
+    recovered = 0
+    for entry in store.list_redistill(project["key"], limit):
+        existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
+        records = distiller.distill(entry["text"], existing)
+        if records and not all(r.degraded for r in records):
+            try:
+                old_ids = json.loads(entry["fact_ids"]) if entry["fact_ids"] else []
+            except (ValueError, TypeError):
+                old_ids = []
+            store.delete_facts(old_ids)
+            add_records(store, embedder, cfg, project, entry["session_id"] or "", records)
+            store.clear_redistill(entry["id"])
+            recovered += 1
+        else:
+            store.bump_redistill(entry["id"], max_attempts)
+    return recovered
 
 
 def capture_transcript(
@@ -208,6 +257,7 @@ def capture_transcript_incremental(
     stored verbatim alongside the distilled facts. The cursor advances even when the
     delta yields no facts, so nothing is reprocessed.
     """
+    recover_pending(store, embedder, cfg, project)  # drain any heuristic-fallback backlog first
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
     text, prompts, end = extract_incremental_parts(transcript_path, start)

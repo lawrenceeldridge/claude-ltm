@@ -221,6 +221,25 @@ def _v6_fts_widen(db: sqlite3.Connection) -> None:
     db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
 
 
+def _v8_redistill(db: sqlite3.Connection) -> None:
+    # Recovery queue: raw deltas whose capture fell back to the heuristic (LLM was
+    # unreachable / timed out) are parked here so a later capture with a working LLM
+    # can re-distil them and replace the untitled 'discovery' facts. Shared across
+    # sessions, so a healthy session drains junk a stale/broken one produced.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS pending_redistill ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  project_key TEXT NOT NULL,"
+        "  session_id  TEXT,"
+        "  text        TEXT NOT NULL,"
+        "  fact_ids    TEXT,"
+        "  attempts    INTEGER DEFAULT 0,"
+        "  created_at  REAL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_redistill_project ON pending_redistill(project_key);"
+    )
+
+
 def _v7_index(db: sqlite3.Connection) -> None:
     # Code/docs index tables + their FTS. Additive and idempotent; the facts store is
     # untouched. 'rebuild' backfills the FTS from any chunks written before it existed.
@@ -238,7 +257,8 @@ def _v7_index(db: sqlite3.Connection) -> None:
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
 _MIGRATIONS = [
-    _v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen, _v7_index
+    _v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen,
+    _v7_index, _v8_redistill,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -679,4 +699,44 @@ class Store:
         with self.db:
             self.db.execute("DELETE FROM chunk_sources WHERE project_key = ?", (project_key,))
             cur = self.db.execute("DELETE FROM chunks WHERE project_key = ?", (project_key,))
+        return cur.rowcount
+
+    # ---- Re-distillation recovery queue -------------------------------------------
+
+    def enqueue_redistill(
+        self, project_key: str, session_id: str, text: str, fact_ids: list[str], now: float | None = None
+    ) -> None:
+        """Park a delta whose capture fell back to the heuristic, for later re-distillation."""
+        self.db.execute(
+            "INSERT INTO pending_redistill (project_key, session_id, text, fact_ids, attempts, created_at) "
+            "VALUES (?, ?, ?, ?, 0, ?)",
+            (project_key, session_id, text, json.dumps(fact_ids), now if now is not None else time.time()),
+        )
+        self.db.commit()
+
+    def list_redistill(self, project_key: str, limit: int = 3) -> list[sqlite3.Row]:
+        """Oldest pending recovery entries for a project (bounded per call to cap LLM cost)."""
+        return self.db.execute(
+            "SELECT id, session_id, text, fact_ids, attempts FROM pending_redistill "
+            "WHERE project_key = ? ORDER BY id ASC LIMIT ?",
+            (project_key, limit),
+        ).fetchall()
+
+    def clear_redistill(self, entry_id: int) -> None:
+        self.db.execute("DELETE FROM pending_redistill WHERE id = ?", (entry_id,))
+        self.db.commit()
+
+    def bump_redistill(self, entry_id: int, max_attempts: int) -> None:
+        """Record a failed recovery attempt; drop the entry once it has been tried enough."""
+        self.db.execute("UPDATE pending_redistill SET attempts = attempts + 1 WHERE id = ?", (entry_id,))
+        self.db.execute("DELETE FROM pending_redistill WHERE id = ? AND attempts >= ?", (entry_id, max_attempts))
+        self.db.commit()
+
+    def delete_facts(self, fact_ids: list[str]) -> int:
+        """Hard-delete facts by id (FTS stays in sync via the delete trigger). Used by recovery."""
+        if not fact_ids:
+            return 0
+        placeholders = ",".join("?" for _ in fact_ids)
+        cur = self.db.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", tuple(fact_ids))
+        self.db.commit()
         return cur.rowcount
