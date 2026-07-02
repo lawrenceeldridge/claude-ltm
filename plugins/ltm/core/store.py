@@ -83,21 +83,21 @@ CREATE TABLE IF NOT EXISTS capture_cursors (
 # exact-term recall.
 _FTS_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
-  text, title, narrative, content='facts', content_rowid='rowid', tokenize='porter unicode61'
+  text, title, subtitle, narrative, files, content='facts', content_rowid='rowid', tokenize='porter unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-  INSERT INTO facts_fts(rowid, text, title, narrative)
-  VALUES (new.rowid, new.text, COALESCE(new.title,''), COALESCE(new.narrative,''));
+  INSERT INTO facts_fts(rowid, text, title, subtitle, narrative, files)
+  VALUES (new.rowid, new.text, COALESCE(new.title,''), COALESCE(new.subtitle,''), COALESCE(new.narrative,''), COALESCE(new.files,''));
 END;
 CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-  INSERT INTO facts_fts(facts_fts, rowid, text, title, narrative)
-  VALUES ('delete', old.rowid, old.text, COALESCE(old.title,''), COALESCE(old.narrative,''));
+  INSERT INTO facts_fts(facts_fts, rowid, text, title, subtitle, narrative, files)
+  VALUES ('delete', old.rowid, old.text, COALESCE(old.title,''), COALESCE(old.subtitle,''), COALESCE(old.narrative,''), COALESCE(old.files,''));
 END;
 CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-  INSERT INTO facts_fts(facts_fts, rowid, text, title, narrative)
-  VALUES ('delete', old.rowid, old.text, COALESCE(old.title,''), COALESCE(old.narrative,''));
-  INSERT INTO facts_fts(rowid, text, title, narrative)
-  VALUES (new.rowid, new.text, COALESCE(new.title,''), COALESCE(new.narrative,''));
+  INSERT INTO facts_fts(facts_fts, rowid, text, title, subtitle, narrative, files)
+  VALUES ('delete', old.rowid, old.text, COALESCE(old.title,''), COALESCE(old.subtitle,''), COALESCE(old.narrative,''), COALESCE(old.files,''));
+  INSERT INTO facts_fts(rowid, text, title, subtitle, narrative, files)
+  VALUES (new.rowid, new.text, COALESCE(new.title,''), COALESCE(new.subtitle,''), COALESCE(new.narrative,''), COALESCE(new.files,''));
 END;
 """
 
@@ -149,11 +149,23 @@ def _v5_subtitle(db: sqlite3.Connection) -> None:
     _add_columns(db, [("subtitle", "subtitle TEXT")])
 
 
+def _v6_fts_widen(db: sqlite3.Connection) -> None:
+    # FTS5 can't ALTER-add columns, so drop and rebuild the index over the widened
+    # column set (now including subtitle + files). Facts (the content table) are
+    # untouched; 'rebuild' repopulates the index from them.
+    db.executescript(
+        "DROP TRIGGER IF EXISTS facts_ai; DROP TRIGGER IF EXISTS facts_ad;"
+        "DROP TRIGGER IF EXISTS facts_au; DROP TABLE IF EXISTS facts_fts;"
+    )
+    db.executescript(_FTS_SCHEMA)
+    db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
-_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle]
+_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
 

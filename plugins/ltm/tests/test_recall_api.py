@@ -110,6 +110,18 @@ class RecallStructuredTests(unittest.TestCase):
         )
         self.assertEqual(len(self.store.fts_search(self.project["key"], "zephyr")), 1)
 
+    def test_fts_matches_subtitle_and_files(self):
+        from core.distill import Observation, observations_to_facts
+
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            observations_to_facts([Observation(
+                type="feature", title="X", subtitle="uses zephyr indexing",
+                facts=["did a thing"], narrative="", files=["core/widget.py"])]),
+        )
+        self.assertEqual(len(self.store.fts_search(self.project["key"], "zephyr")), 1)   # subtitle
+        self.assertEqual(len(self.store.fts_search(self.project["key"], "widget")), 1)   # file path
+
     def test_fts_backfill_on_migration(self):
         from core.distill import DistilledFact
 

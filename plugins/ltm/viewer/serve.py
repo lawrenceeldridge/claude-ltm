@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
 from core.embedding import get_embedder  # noqa: E402
-from core.recall import search  # noqa: E402
+from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
 
 PAGE = """<!doctype html>
@@ -138,7 +138,10 @@ function cardHTML(c, flash) {
   const when = fmtWhen(c.created);
   const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
   const title = c.title ? `<div class="title">${esc(c.title)}</div>` : '';
-  const subtitle = c.subtitle ? `<div class="subtitle">${esc(c.subtitle)}</div>` : '';
+  // Always show a lead line: the subtitle, or (for untitled/heuristic facts) the
+  // first fact — so a card is never just a badge + timestamp.
+  const leadText = c.subtitle || (!c.title && c.facts && c.facts[0]) || '';
+  const subtitle = leadText ? `<div class="subtitle">${esc(leadText)}</div>` : '';
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
   if (c.kind === 'prompt') {
@@ -314,12 +317,12 @@ class Handler(BaseHTTPRequestHandler):
             store = Store(cfg.db_path)
             if query and project_key:
                 project = {"key": project_key, "path": "", "label": ""}
-                # Search ranks the whole active collection server-side, so it stays
-                # comprehensive regardless of how much the browse list has lazily loaded.
-                # Each hit renders as its own card (it carries its observation metadata).
+                # Fused search (vector + lexical + FTS) so the box matches every
+                # indexed field — text, title, subtitle, narrative and file paths —
+                # not just the embedded fact text. Each hit renders as its own card.
                 k = store.active_count(project_key) or 1
-                hits = search(store, get_embedder(cfg), project, query, cfg, k=k, min_sim=-1.0)
-                out = [_card_from_rows([r], round(s, 3)) for s, r in hits]
+                hits = search_fused(store, get_embedder(cfg), project, query, cfg, k=k)
+                out = [_card_from_rows([row], round(sim, 3)) for _score, sim, row in hits]
             else:
                 limit = _int_param(params, "limit")
                 offset = _int_param(params, "offset") or 0
