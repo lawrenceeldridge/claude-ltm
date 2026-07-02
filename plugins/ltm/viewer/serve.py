@@ -97,6 +97,10 @@ PAGE = """<!doctype html>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => (s==null?'':String(s)).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const pad2 = n => String(n).padStart(2,'0');
+// created_at is a UTC epoch; render it in the viewer's LOCAL time (not toISOString/UTC).
+const fmtWhen = ts => { const d = new Date(ts*1000);
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const PAGE = 50;
 let offset = 0, loading = false, exhausted = false, mode = 'list';
 
@@ -128,7 +132,7 @@ function summaryHTML(c) {
   return secs || `<div class="narr">${esc(c.narrative||'')}</div>`;
 }
 function cardHTML(c, flash) {
-  const when = new Date(c.created*1000).toISOString().slice(0,16).replace('T',' ');
+  const when = fmtWhen(c.created);
   const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
   const title = c.title ? `<div class="title">${esc(c.title)}</div>` : '';
   const subtitle = c.subtitle ? `<div class="subtitle">${esc(c.subtitle)}</div>` : '';
