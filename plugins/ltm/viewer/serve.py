@@ -50,7 +50,7 @@ PAGE = """<!doctype html>
   .card { position:relative; background:var(--card); border:1px solid var(--border);
           border-radius:var(--radius); padding:16px 20px; margin-bottom:12px; transition:border-color .15s; }
   .card:hover { border-color:var(--border2); }
-  .cinner { max-width:820px; margin:0 auto; }  /* but the content/text stays a readable column */
+  .cinner { max-width:820px; }                 /* left-aligned, capped reading column */
   .chead { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
   .badge { font:600 11px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.05em;
            padding:4px 7px; border-radius:6px; color:#fff; background:var(--muted); }
@@ -140,13 +140,13 @@ function cardHTML(c, flash) {
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
   if (c.kind === 'session_summary') {
-    return `<div class="${cls}" data-type="session_summary"><div class="cinner"><div class="chead">${badge(c)}</div>${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
+    return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }
   const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
   const toggles = `<div class="toggles"><button class="toggle" data-v="facts">facts</button>`
     + (c.narrative ? `<button class="toggle" data-v="narr">narrative</button>` : '') + `</div>`;
-  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="cinner"><div class="chead">${badge(c)}${toggles}</div>${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div></div>`;
+  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${toggles}</div><div class="cinner">${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div></div>`;
 }
 async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
