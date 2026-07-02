@@ -66,6 +66,9 @@ PAGE = """<!doctype html>
 <main><div id="list" class="empty">Loading…</div></main>
 <script>
 const $ = s => document.querySelector(s);
+const PAGE = 50;
+let offset = 0, loading = false, exhausted = false, mode = 'list';
+
 async function loadProjects() {
   const rows = await (await fetch('/api/projects')).json();
   const sel = $('#project');
@@ -73,23 +76,44 @@ async function loadProjects() {
   sel.innerHTML = rows.map(r =>
     `<option value="${r.project_key}">${r.label} (${r.count})</option>`).join('');
   if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh
-  if (rows.length) await loadFacts();
-  else $('#list').textContent = 'No memory captured yet.';
+  return rows.length;
 }
-async function loadFacts(flash) {
+function factHTML(r, flash) {
+  const when = new Date(r.created*1000).toISOString().slice(0,16).replace('T',' ');
+  const score = r.score==null ? '' : `<span class="score">${r.score}</span> · `;
+  return `<div class="${flash?'fact flash':'fact'}">${r.text}<div class="meta">${score}${r.kind} · ${when}</div></div>`;
+}
+async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
-  const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}`;
-  const rows = await (await fetch(url)).json();
-  if (!rows.length) { $('#list').innerHTML = '<div class="empty">No facts.</div>'; return; }
-  $('#list').innerHTML = rows.map(r => {
-    const when = new Date(r.created*1000).toISOString().slice(0,16).replace('T',' ');
-    const score = r.score==null ? '' : `<span class="score">${r.score}</span> · `;
-    const cls = flash ? 'fact flash' : 'fact';
-    return `<div class="${cls}">${r.text}<div class="meta">${score}${r.kind} · ${when}</div></div>`;
-  }).join('');
+  const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}${extra}`;
+  return await (await fetch(url)).json();
 }
-$('#project').addEventListener('change', () => loadFacts());
-let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => loadFacts(),180); });
+// Full re-render from the top: a query shows all ranked search hits; a blank query
+// shows the first (newest) page of the browse list, which grows via loadMore().
+async function reload(flash) {
+  const q = $('#q').value.trim();
+  mode = q ? 'search' : 'list';
+  offset = 0; exhausted = false;
+  const rows = q ? await fetchFacts() : await fetchFacts(`&limit=${PAGE}&offset=0`);
+  if (mode === 'list') { offset = rows.length; exhausted = rows.length < PAGE; }
+  $('#list').innerHTML = rows.length
+    ? rows.map(r => factHTML(r, flash)).join('')
+    : '<div class="empty">No facts.</div>';
+}
+// Infinite scroll: append the next page of the browse list. Inert during search.
+async function loadMore() {
+  if (mode !== 'list' || loading || exhausted) return;
+  loading = true;
+  const rows = await fetchFacts(`&limit=${PAGE}&offset=${offset}`);
+  offset += rows.length; exhausted = rows.length < PAGE;
+  if (rows.length) $('#list').insertAdjacentHTML('beforeend', rows.map(r => factHTML(r, false)).join(''));
+  loading = false;
+}
+$('#project').addEventListener('change', () => reload());
+let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => reload(),180); });
+window.addEventListener('scroll', () => {
+  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) loadMore();
+});
 
 // Live updates: the server pushes a `change` event whenever the memory store is
 // written to (capture from any session). EventSource auto-reconnects on drop.
@@ -99,14 +123,26 @@ function connectStream() {
   es.onopen = () => { badge.classList.remove('off'); label.textContent = 'live'; };
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
-    await loadFacts(true);     // re-render current view with a brief highlight
+    await reload(true);        // newest-first: a fresh capture appears at the top with a highlight
   });
   es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
 }
-loadProjects().then(connectStream);
+(async () => {
+  const n = await loadProjects();
+  if (n) await reload();
+  else $('#list').textContent = 'No memory captured yet.';
+  connectStream();
+})();
 </script>
 </body></html>
 """
+
+
+def _int_param(params: dict, name: str) -> int | None:
+    try:
+        return int(params.get(name, [""])[0])
+    except (TypeError, ValueError):
+        return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -175,15 +211,21 @@ class Handler(BaseHTTPRequestHandler):
             store = Store(cfg.db_path)
             if query and project_key:
                 project = {"key": project_key, "path": "", "label": ""}
-                hits = search(store, get_embedder(cfg), project, query, cfg, k=50, min_sim=-1.0)
+                # Search ranks the whole active collection server-side, so it stays
+                # comprehensive regardless of how much the browse list has lazily loaded.
+                k = store.active_count(project_key) or 1
+                hits = search(store, get_embedder(cfg), project, query, cfg, k=k, min_sim=-1.0)
                 out = [
                     {"text": r["text"], "score": round(s, 3), "kind": r["kind"], "created": r["created_at"]}
                     for s, r in hits
                 ]
             else:
+                limit = _int_param(params, "limit")
+                offset = _int_param(params, "offset") or 0
+                rows = store.rows_for_project(project_key, limit=limit, offset=offset)
                 out = [
                     {"text": r["text"], "score": None, "kind": r["kind"], "created": r["created_at"]}
-                    for r in store.rows_for_project(project_key)
+                    for r in rows
                 ]
             store.close()
             self._send(200, json.dumps(out))

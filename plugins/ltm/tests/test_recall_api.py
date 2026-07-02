@@ -77,6 +77,17 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(result["facts"], [])
         self.assertIn("do not assume prior context", result["guidance"])
 
+    def test_rows_for_project_paginates_newest_first(self):
+        for i in range(5):
+            service.add_facts(self.store, self.embedder, self.cfg, self.project, f"s{i}", [f"fact {i}"])
+        all_rows = [r["text"] for r in self.store.rows_for_project(self.project["key"])]
+        self.assertEqual(all_rows, [f"fact {i}" for i in reversed(range(5))])
+        page1 = [r["text"] for r in self.store.rows_for_project(self.project["key"], limit=2, offset=0)]
+        page2 = [r["text"] for r in self.store.rows_for_project(self.project["key"], limit=2, offset=2)]
+        self.assertEqual(page1, ["fact 4", "fact 3"])
+        self.assertEqual(page2, ["fact 2", "fact 1"])
+        self.assertEqual(self.store.active_count(self.project["key"]), 5)
+
     def test_dim_divergence_returns_embedding_mismatch(self):
         service.add_facts(
             self.store, self.embedder, self.cfg, self.project, "s1",

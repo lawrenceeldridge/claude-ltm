@@ -159,10 +159,16 @@ class Store:
     def get(self, fact_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
 
-    def rows_for_project(self, project_key: str) -> list[sqlite3.Row]:
-        return self.db.execute(
-            "SELECT * FROM facts WHERE project_key = ?", (project_key,)
-        ).fetchall()
+    def rows_for_project(
+        self, project_key: str, limit: int | None = None, offset: int = 0
+    ) -> list[sqlite3.Row]:
+        """Facts for a project, newest first. Paginate with limit/offset; limit=None returns all."""
+        sql = "SELECT * FROM facts WHERE project_key = ? ORDER BY created_at DESC, rowid DESC"
+        params: list = [project_key]
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+        return self.db.execute(sql, params).fetchall()
 
     def active_rows_for_project(self, project_key: str) -> list[sqlite3.Row]:
         return self.db.execute(
@@ -202,6 +208,12 @@ class Store:
 
     def count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM facts WHERE status = 'active'").fetchone()[0]
+
+    def active_count(self, project_key: str) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM facts WHERE project_key = ? AND status = 'active'",
+            (project_key,),
+        ).fetchone()[0]
 
     def sweep(
         self,
