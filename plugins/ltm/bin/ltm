@@ -143,8 +143,23 @@ def cmd_daemon(_args) -> int:
 
 
 def cmd_viewer(args) -> int:
-    from viewer.serve import serve
+    import webbrowser
 
+    from viewer.serve import ensure_viewer, serve, stop_viewer
+
+    if args.stop:
+        print("stopped resident viewer" if stop_viewer() else "no resident viewer running")
+        return 0
+    if args.ensure:
+        ensure_viewer(args.port, str(ROOT))
+        url = f"http://127.0.0.1:{args.port}/"
+        print(f"[ltm] viewer at {url}")
+        if not args.no_open:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return 0
     serve(port=args.port, open_browser=not args.no_open)
     return 0
 
@@ -227,6 +242,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("viewer", help="launch the localhost viewer")
     p.add_argument("--port", type=int, default=7801)
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p.add_argument("--ensure", action="store_true", help="ensure the resident viewer is up (detached), then open it")
+    p.add_argument("--stop", action="store_true", help="stop the resident viewer")
     p.set_defaults(func=cmd_viewer)
 
     p = sub.add_parser("eval", help="benchmark embedding backends on a labelled recall set")

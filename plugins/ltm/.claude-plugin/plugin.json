@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -110,6 +110,20 @@
       "default": 0.85,
       "min": 0,
       "max": 1
+    },
+    "viewer_autostart": {
+      "type": "boolean",
+      "title": "Auto-start memory viewer",
+      "description": "Start the localhost memory viewer as a detached background process on session start. It stays up across sessions (only one instance runs) and streams live updates. Disable to start it manually with /memory-viewer.",
+      "default": true
+    },
+    "viewer_port": {
+      "type": "number",
+      "title": "Memory viewer port",
+      "description": "Localhost port for the always-on memory viewer.",
+      "default": 7801,
+      "min": 1024,
+      "max": 65535
     }
   }
 }

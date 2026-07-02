@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import sqlite3
+import subprocess
 import sys
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,12 +48,20 @@ PAGE = """<!doctype html>
   .meta { color:#8b949e; font-size:12px; margin-top:5px; }
   .score { color:#3fb950; }
   .empty { color:#8b949e; padding:20px 0; }
+  #live { margin-inline-start:auto; font-size:12px; color:#8b949e; display:flex;
+          align-items:center; gap:6px; }
+  #live .dot { width:8px; height:8px; border-radius:50%; background:#3fb950;
+               box-shadow:0 0 6px #3fb950; }
+  #live.off .dot { background:#8b949e; box-shadow:none; }
+  .fact.flash { animation:flash 1.2s ease-out; }
+  @keyframes flash { from { border-color:#3fb950; } to { border-color:#21262d; } }
 </style></head>
 <body>
 <header>
   <h1>claude-ltm</h1>
   <select id="project"></select>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
+  <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
 </header>
 <main><div id="list" class="empty">Loading…</div></main>
 <script>
@@ -57,12 +69,14 @@ const $ = s => document.querySelector(s);
 async function loadProjects() {
   const rows = await (await fetch('/api/projects')).json();
   const sel = $('#project');
+  const prev = sel.value;
   sel.innerHTML = rows.map(r =>
     `<option value="${r.project_key}">${r.label} (${r.count})</option>`).join('');
-  if (rows.length) loadFacts();
+  if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh
+  if (rows.length) await loadFacts();
   else $('#list').textContent = 'No memory captured yet.';
 }
-async function loadFacts() {
+async function loadFacts(flash) {
   const pk = $('#project').value, q = $('#q').value.trim();
   const url = `/api/facts?project=${encodeURIComponent(pk)}&q=${encodeURIComponent(q)}`;
   const rows = await (await fetch(url)).json();
@@ -70,12 +84,26 @@ async function loadFacts() {
   $('#list').innerHTML = rows.map(r => {
     const when = new Date(r.created*1000).toISOString().slice(0,16).replace('T',' ');
     const score = r.score==null ? '' : `<span class="score">${r.score}</span> · `;
-    return `<div class="fact">${r.text}<div class="meta">${score}${r.kind} · ${when}</div></div>`;
+    const cls = flash ? 'fact flash' : 'fact';
+    return `<div class="${cls}">${r.text}<div class="meta">${score}${r.kind} · ${when}</div></div>`;
   }).join('');
 }
-$('#project').addEventListener('change', loadFacts);
-let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(loadFacts,180); });
-loadProjects();
+$('#project').addEventListener('change', () => loadFacts());
+let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => loadFacts(),180); });
+
+// Live updates: the server pushes a `change` event whenever the memory store is
+// written to (capture from any session). EventSource auto-reconnects on drop.
+function connectStream() {
+  const es = new EventSource('/events');
+  const badge = $('#live'), label = $('#live-label');
+  es.onopen = () => { badge.classList.remove('off'); label.textContent = 'live'; };
+  es.addEventListener('change', async () => {
+    await loadProjects();      // refresh counts + keep current project selected
+    await loadFacts(true);     // re-render current view with a brief highlight
+  });
+  es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
+}
+loadProjects().then(connectStream);
 </script>
 </body></html>
 """
@@ -90,11 +118,48 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _stream(self, cfg) -> None:
+        """Hold the connection open and push an SSE `change` event whenever the
+
+        store is written to. `PRAGMA data_version` increments on every commit made
+        by another connection (the capture process), so it is a cheap, exact change
+        signal without polling row counts.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        db = sqlite3.connect(str(cfg.db_path))
+        try:
+            last = db.execute("PRAGMA data_version").fetchone()[0]
+            idle = 0
+            while True:
+                version = db.execute("PRAGMA data_version").fetchone()[0]
+                if version != last:
+                    last = version
+                    self.wfile.write(b"event: change\ndata: 1\n\n")
+                    self.wfile.flush()
+                    idle = 0
+                else:
+                    idle += 1
+                    if idle >= 15:  # heartbeat so proxies/browsers hold the connection
+                        idle = 0
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                time.sleep(1)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # client navigated away; EventSource will reconnect
+        finally:
+            db.close()
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         cfg = get_config()
         if parsed.path == "/":
             self._send(200, PAGE, "text/html; charset=utf-8")
+        elif parsed.path == "/events":
+            self._stream(cfg)
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
             out = [
@@ -129,8 +194,55 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _viewer_alive(port: int) -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        return True
+    except OSError:
+        return False
+
+
+def ensure_viewer(port: int, plugin_root: str) -> None:
+    """Start the viewer as a detached background process if it isn't already up.
+
+    Mirrors ``ensure_daemon``: idempotent (one instance across all sessions via the
+    port check) and detached with ``start_new_session=True`` so it outlives the
+    Claude Code session that spawned it.
+    """
+    if _viewer_alive(port):
+        return
+    ltm = os.path.join(plugin_root, "bin", "ltm")
+    try:
+        subprocess.Popen(
+            [sys.executable, ltm, "viewer", "--no-open", "--port", str(port)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def stop_viewer() -> bool:
+    """Stop the resident viewer via its PID file. Returns True if one was killed."""
+    cfg = get_config()
+    try:
+        pid = int(cfg.viewer_pid_path.read_text())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        pass
+    cfg.viewer_pid_path.unlink(missing_ok=True)
+    return True
+
+
 def serve(port: int = 7801, open_browser: bool = True) -> None:
+    cfg = get_config()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    cfg.viewer_pid_path.write_text(str(os.getpid()))
     url = f"http://127.0.0.1:{port}/"
     print(f"[ltm] viewer at {url}  (ctrl-c to stop)")
     if open_browser:
@@ -142,6 +254,8 @@ def serve(port: int = 7801, open_browser: bool = True) -> None:
         httpd.serve_forever()
     except KeyboardInterrupt:
         httpd.shutdown()
+    finally:
+        cfg.viewer_pid_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

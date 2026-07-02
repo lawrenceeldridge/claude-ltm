@@ -33,6 +33,11 @@ def main() -> int:
         from core.store import Store
 
         cfg = get_config()
+        if cfg.viewer_autostart:
+            # Detached, idempotent: survives this session and only ever runs once.
+            from viewer.serve import ensure_viewer
+
+            ensure_viewer(cfg.viewer_port, str(ROOT))
         if cfg.embedding != "hash":
             from core.provision import is_provisioned
 
