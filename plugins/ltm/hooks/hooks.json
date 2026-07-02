@@ -30,6 +30,19 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/prefer_memory.py"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

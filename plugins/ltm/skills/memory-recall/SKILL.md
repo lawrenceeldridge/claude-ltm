@@ -1,6 +1,6 @@
 ---
 name: memory-recall
-description: Consult the project's long-term memory before an expensive code search or when resuming work. Fetches distilled facts via the ltm-memory `recall` tool with a calibrated confidence verdict, then applies a memory-first stop rule — trust strong recall and skip the wider search, widen only when recall is weak or empty. Use when starting or resuming a task, when the user asks "what do we know / what did we decide / where is X / did we already do this", before a broad Grep/Glob/Task sweep of unfamiliar code, or when a search keeps missing. Do NOT use for trivial single-file lookups you can answer directly.
+description: Consult the project's long-term memory AND its code/docs index before an expensive search or when resuming work. Fetches distilled facts via the ltm-memory `recall` tool (calibrated confidence verdict) and ranked symbol/section outlines via `search_code` / `search_docs`, then applies a memory-first stop rule — trust strong recall/search and skip the wider Grep/Glob/Task, widen only when they are weak or empty. Use when starting or resuming a task, when the user asks "what do we know / what did we decide / where is X / how does Y work / did we already do this", before a broad Grep/Glob/Task sweep of unfamiliar code or docs, or when a search keeps missing. Do NOT use for trivial single-file lookups you can answer directly.
 license: MIT
 metadata:
   author: Lawrence Eldridge
@@ -43,6 +43,25 @@ The `verdict` decides whether you still need a wider search:
 - **`no_memory`** — Nothing is stored for this query. Do **not** assume prior
   context or claim the project "already does" something. Proceed with a normal
   search.
+
+### Step 2b: Search the index for code & docs
+
+`recall` returns *distilled facts* — what was learned. For "where is X / how does Y
+work" over the current code or docs, also use the **index** (populated by `index_docs`):
+
+- **`search_code`** — ranked code symbols (functions/classes/methods across Python,
+  TS/JS). Returns outlines (qualname + signature/docstring summary + `freshness`),
+  not file contents. Then `get_symbol(ref=<qualname>)` for one symbol's full source.
+- **`search_docs`** — ranked markdown sections (breadcrumb + summary + `freshness`).
+  Then `get_doc_section(ref=<anchor>)` for one section's body.
+- **`code_outline`** / **`doc_outline`** — a module's public surface / a doc's skeleton
+  with no bodies, to orient before drilling in.
+
+Prefer this over Grep/Glob: it is a ranked lookup over a compact index, and returns
+one symbol/section rather than a file scan. Same stop rule — if the top hits answer
+the question, act on them (checking `freshness`: `fresh` = trust; `edited`/`stale` =
+re-read the live file). Empty results usually mean the project isn't indexed yet:
+fall back to a normal search (and consider running `index_docs`).
 
 ### Step 3: Report honestly
 
