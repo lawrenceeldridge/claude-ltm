@@ -79,6 +79,8 @@ def add_records(
             title=record.title,
             narrative=record.narrative,
             files=record.files,
+            type=record.type,
+            observation_id=record.observation_id,
         )
         if victims:
             store.supersede(list(victims), fact_id)

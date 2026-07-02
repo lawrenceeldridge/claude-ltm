@@ -158,6 +158,34 @@ class RecallStructuredTests(unittest.TestCase):
         rows = [r for r in self.store.rows_for_project(self.project["key"]) if r["kind"] == "session_summary"]
         self.assertEqual([r["text"] for r in rows], ["Summary two"])
 
+    def test_observation_grouping_persists(self):
+        from core.distill import Observation, observations_to_facts
+
+        recs = observations_to_facts(
+            [Observation(type="feature", title="Add X", facts=["did a", "did b"], narrative="why")]
+        )
+        service.add_records(self.store, self.embedder, self.cfg, self.project, "s1", recs)
+        rows = self.store.rows_for_project(self.project["key"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({r["observation_id"] for r in rows}), 1)
+        self.assertTrue(all(r["type"] == "feature" for r in rows))
+
+    def test_list_observations_groups_newest_first(self):
+        from core.distill import Observation, observations_to_facts
+
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            observations_to_facts([Observation(type="feature", title="A", facts=["a1", "a2"])]),
+        )
+        service.add_records(
+            self.store, self.embedder, self.cfg, self.project, "s1",
+            observations_to_facts([Observation(type="bugfix", title="B", facts=["b1"])]),
+        )
+        groups = self.store.list_observations(self.project["key"])
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(groups[0][0]["title"], "B")  # newest group first
+        self.assertEqual([r["text"] for r in groups[1]], ["a1", "a2"])  # group keeps its facts
+
     def test_dim_divergence_returns_embedding_mismatch(self):
         service.add_facts(
             self.store, self.embedder, self.cfg, self.project, "s1",
@@ -275,6 +303,27 @@ class DistillStructuredTests(unittest.TestCase):
         from core.distill import parse_summary
 
         self.assertIsNone(parse_summary("not json at all"))
+
+    def test_parse_observations_and_expand_to_grouped_facts(self):
+        from core.distill import observations_to_facts, parse_observations
+
+        raw = ('{"observations":[{"type":"feature","title":"Add X",'
+               '"facts":["did a","did b"],"narrative":"why","files":["a.py"],"supersedes":[]}]}')
+        obs = parse_observations(raw)
+        self.assertEqual(len(obs), 1)
+        self.assertEqual(obs[0].type, "feature")
+        self.assertEqual(obs[0].facts, ["did a", "did b"])
+        facts = observations_to_facts(obs)
+        self.assertEqual([f.text for f in facts], ["did a", "did b"])
+        self.assertEqual(len({f.observation_id for f in facts}), 1)  # grouped under one card
+        self.assertTrue(all(f.type == "feature" and f.narrative == "why" for f in facts))
+        self.assertEqual([f.supersedes for f in facts], [[], []])  # obs had none
+
+    def test_parse_observations_defaults_unknown_type(self):
+        from core.distill import parse_observations
+
+        obs = parse_observations('{"observations":[{"type":"nonsense","facts":["x"]}]}')
+        self.assertEqual(obs[0].type, "discovery")
 
 
 if __name__ == "__main__":

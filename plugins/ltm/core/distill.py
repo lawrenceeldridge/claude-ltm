@@ -20,6 +20,7 @@ the heuristic on any failure, so capture never breaks.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -30,6 +31,11 @@ from dataclasses import dataclass, field
 _NOISE_PREFIXES = ("http", "```", "|", ">", "<")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _NON_IDS = {"", "none", "null", "n/a", "na", "-"}  # sentinels small models emit for "nothing"
+
+# Observation categories (mirrors claude-mem's taxonomy). Small models drift, so
+# anything off-list falls back to "discovery" at parse time.
+_TYPES = {"decision", "bugfix", "feature", "refactor", "discovery", "change"}
+_DEFAULT_TYPE = "discovery"
 
 # Directive / interrogative openers that mark a user ask rather than a durable
 # fact — memory records what happened, not what was requested. Kept narrow and
@@ -50,6 +56,24 @@ class DistilledFact:
     title: str = ""
     narrative: str = ""
     files: list[str] = field(default_factory=list)
+    type: str = ""
+    observation_id: str = ""
+
+
+@dataclass
+class Observation:
+    """A typed group of atomic facts plus one shared narrative (the card unit).
+
+    Facts remain the embedded retrieval unit; type/title/narrative/files are card
+    metadata shared across the group.
+    """
+
+    facts: list[str]
+    type: str = _DEFAULT_TYPE
+    title: str = ""
+    narrative: str = ""
+    files: list[str] = field(default_factory=list)
+    supersedes: list[str] = field(default_factory=list)
 
 
 def _is_user_ask(line: str) -> bool:
@@ -99,7 +123,7 @@ class Distiller(ABC):
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
-        return [DistilledFact(fact) for fact in heuristic_facts(text)]
+        return [DistilledFact(fact, type=_DEFAULT_TYPE) for fact in heuristic_facts(text)]
 
 
 _PROMPT = """You extract durable long-term memory from a coding assistant session.
@@ -108,28 +132,32 @@ The transcript interleaves user messages with the assistant's actions (rendered
 as lines like "Edited auth.py", "Ran: just test") and its explanations. Record
 what the ASSISTANT did and learned, not what the user asked.
 
-Output ONLY a JSON object of the form {{"facts": [ ... ]}}. Each element:
-  {{"text": "<one atomic, self-contained fact in present tense, <=200 chars>",
-    "title": "<short headline, <=60 chars>",
-    "narrative": "<1-3 sentences giving the why/how and any detail worth keeping, <=500 chars>",
-    "files": ["<repo-relative path this fact concerns>", ...],
-    "supersedes": ["<id of an existing fact this makes outdated>", ...]}}
+Group related facts into observations. Output ONLY a JSON object of the form
+{{"observations": [ ... ]}}. Each observation:
+  {{"type": "<one of: decision|bugfix|feature|refactor|discovery|change>",
+    "title": "<short headline for the group, <=60 chars>",
+    "facts": ["<atomic, self-contained fact in present tense, <=200 chars>", ...],
+    "narrative": "<1-3 sentences of why/how and detail worth keeping, <=500 chars>",
+    "files": ["<repo-relative path this observation concerns>", ...],
+    "supersedes": ["<id of an existing fact this observation makes outdated>", ...]}}
 
-`text` is the atomic fact used for retrieval; `title`/`narrative`/`files` add
-recoverable detail. Use [] / "" when a field does not apply.
+Each string in `facts` is an atomic memory used for retrieval, so keep them
+self-contained; `title`/`narrative`/`files` are shared context for the group.
+Use [] / "" when a field does not apply. One observation may hold a single fact.
 
-Prefer facts in these categories:
-- what-changed  : a concrete change made (file/module edited, feature added, config set)
-- decision      : a choice made and, briefly, why
-- problem-solution / gotcha : a bug hit and how it was fixed; a non-obvious trap
-- pattern / convention : a reusable approach or house style adopted
-- trade-off     : an option weighed and rejected, and why
+Choose `type` by intent:
+- feature   : new capability or feature added
+- change    : a concrete change to existing behaviour/config
+- refactor  : restructuring without behaviour change
+- bugfix    : a bug hit and how it was fixed
+- decision  : a choice made and, briefly, why
+- discovery : something learned about the code/system (default)
 
 Rules:
 - Capture outcomes that help a future session, not narration. Skip questions,
   chatter, tool noise, and anything transient.
 - Attribute concretely ("Uses X because Y"), not vaguely ("made some changes").
-- If a new fact updates or contradicts an existing one, put that fact's id in
+- If an observation updates or contradicts existing facts, put their ids in
   "supersedes" (even if the wording is completely different); else use [].
 
 Existing facts (id: text):
@@ -197,6 +225,57 @@ def parse_records(output: str) -> list[DistilledFact]:
     return records
 
 
+def parse_observations(output: str) -> list[Observation]:
+    observations = []
+    for item in _coerce_items(output):
+        if not isinstance(item, dict):
+            continue
+        facts = _str_list(item.get("facts")) or ([str(item["text"]).strip()] if item.get("text") else [])
+        if not facts:
+            continue
+        typ = str(item.get("type", "")).strip().lower()
+        observations.append(
+            Observation(
+                facts=facts,
+                type=typ if typ in _TYPES else _DEFAULT_TYPE,
+                title=str(item.get("title", "")).strip(),
+                narrative=str(item.get("narrative", "")).strip(),
+                files=_str_list(item.get("files")),
+                supersedes=[s for s in _str_list(item.get("supersedes")) if s.lower() not in _NON_IDS],
+            )
+        )
+    return observations
+
+
+def _observation_id(obs: Observation) -> str:
+    basis = obs.title + "\x00" + "\x00".join(obs.facts)
+    return hashlib.sha256(basis.encode()).hexdigest()[:16]
+
+
+def observations_to_facts(observations: list[Observation]) -> list[DistilledFact]:
+    """Flatten observations to atomic facts sharing card metadata.
+
+    Supersession is attached to the group's first fact only, so a group retires its
+    victims once rather than once per fact.
+    """
+    records: list[DistilledFact] = []
+    for obs in observations:
+        oid = _observation_id(obs)
+        for index, fact in enumerate(obs.facts):
+            records.append(
+                DistilledFact(
+                    text=fact,
+                    supersedes=obs.supersedes if index == 0 else [],
+                    title=obs.title,
+                    narrative=obs.narrative,
+                    files=obs.files,
+                    type=obs.type,
+                    observation_id=oid,
+                )
+            )
+    return records
+
+
 def _build_prompt(text: str, existing: list[tuple[str, str]]) -> str:
     existing_block = "\n".join(f"{fid}: {ftext}" for fid, ftext in existing) or "(none)"
     return _PROMPT.format(existing=existing_block, transcript=text)
@@ -206,7 +285,7 @@ _SUMMARY_PROMPT = """Summarise this coding-assistant session as one durable memo
 
 Output ONLY a JSON object:
   {{"title": "<short headline of what the session was about, <=70 chars>",
-    "request": "<what the user set out to achieve>",
+    "investigated": "<what was explored/read/diagnosed>",
     "learned": "<key findings, decisions, or gotchas>",
     "completed": "<what was actually done, incl. commits/files touched>",
     "next_steps": "<what remains, or empty string if nothing>"}}
@@ -218,7 +297,7 @@ Session transcript:
 """
 
 _SUMMARY_SECTIONS = (
-    ("request", "Request"),
+    ("investigated", "Investigated"),
     ("learned", "Learned"),
     ("completed", "Completed"),
     ("next_steps", "Next steps"),
@@ -242,7 +321,7 @@ def parse_summary(output: str) -> DistilledFact | None:
         if str(obj.get(key, "")).strip()
     )
     text = title or str(obj.get("completed", "")).strip()[:200]
-    return DistilledFact(text=text, title=title, narrative=narrative) if text else None
+    return DistilledFact(text=text, title=title, narrative=narrative, type="session_summary") if text else None
 
 
 class ClaudeCliDistiller(Distiller):
@@ -266,7 +345,7 @@ class ClaudeCliDistiller(Distiller):
 
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         try:
-            records = parse_records(self._complete(_build_prompt(text, existing)))
+            records = observations_to_facts(parse_observations(self._complete(_build_prompt(text, existing))))
             if records:
                 return records
         except Exception:
@@ -317,7 +396,7 @@ class HTTPDistiller(Distiller):
 
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
         try:
-            records = parse_records(self._complete(_build_prompt(text, existing)))
+            records = observations_to_facts(parse_observations(self._complete(_build_prompt(text, existing))))
             if records:
                 return records
         except Exception:

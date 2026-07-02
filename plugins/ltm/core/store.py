@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS facts (
   title         TEXT,
   narrative     TEXT,
   files         TEXT,
+  type          TEXT,
+  observation_id TEXT,
   created_at    REAL,
   last_seen     REAL,
   dim           INTEGER,
@@ -135,11 +137,18 @@ def _v3_fts(db: sqlite3.Connection) -> None:
         db.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
 
 
+def _v4_observations(db: sqlite3.Connection) -> None:
+    # Group atomic facts into typed observations for display; the fact stays the
+    # embedded retrieval unit, observation_id/type are card metadata only.
+    _add_columns(db, [("type", "type TEXT"), ("observation_id", "observation_id TEXT")])
+    db.execute("CREATE INDEX IF NOT EXISTS idx_facts_observation ON facts(observation_id)")
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
-_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts]
+_MIGRATIONS = [_v1_lifecycle, _v2_structured, _v3_fts, _v4_observations]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
 
@@ -214,15 +223,17 @@ class Store:
         title: str = "",
         narrative: str = "",
         files: list[str] | None = None,
+        type: str = "",
+        observation_id: str = "",
     ) -> bool:
         fid = self.fact_id(project["key"], text)
         stamp = created_at if created_at is not None else time.time()
         cur = self.db.execute(
             "INSERT OR IGNORE INTO facts "
             "(id, project_key, project_label, project_path, session_id, kind, text, "
-            " title, narrative, files, created_at, last_seen, dim, scale, vec_int8, vec_bits, "
-            " importance, frequency, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
+            " title, narrative, files, type, observation_id, created_at, last_seen, dim, scale, "
+            " vec_int8, vec_bits, importance, frequency, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')",
             (
                 fid,
                 project["key"],
@@ -234,6 +245,8 @@ class Store:
                 title or None,
                 narrative or None,
                 json.dumps(files) if files else None,
+                type or None,
+                observation_id or None,
                 stamp,
                 stamp,
                 dim,
@@ -264,6 +277,32 @@ class Store:
         return self.db.execute(
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
         ).fetchall()
+
+    def list_observations(
+        self, project_key: str, limit: int | None = None, offset: int = 0
+    ) -> list[list[sqlite3.Row]]:
+        """Facts grouped into observation cards, newest group first, paginated by group.
+
+        A group is the facts sharing an observation_id (falling back to the fact's own
+        id for ungrouped rows), returned as an ordered list of its fact rows.
+        """
+        grp = "COALESCE(observation_id, id)"
+        sql = (
+            f"SELECT {grp} AS grp, MAX(created_at) AS ts, MAX(rowid) AS rid "
+            "FROM facts WHERE project_key = ? GROUP BY grp ORDER BY ts DESC, rid DESC"
+        )
+        params: list = [project_key]
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+        groups = self.db.execute(sql, params).fetchall()
+        return [
+            self.db.execute(
+                f"SELECT * FROM facts WHERE project_key = ? AND {grp} = ? ORDER BY rowid ASC",
+                (project_key, row["grp"]),
+            ).fetchall()
+            for row in groups
+        ]
 
     def active_rows(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM facts WHERE status = 'active'").fetchall()

@@ -33,34 +33,57 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>claude-ltm</title>
 <style>
-  :root { color-scheme: dark; }
-  body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
-         background:#0d1117; color:#c9d1d9; }
-  header { padding:14px 18px; border-bottom:1px solid #21262d; display:flex;
-           gap:12px; align-items:center; flex-wrap:wrap; }
-  h1 { font-size:15px; margin:0; color:#58a6ff; }
-  select,input { background:#0d1117; color:#c9d1d9; border:1px solid #30363d;
-                 border-radius:6px; padding:6px 9px; font:inherit; }
-  input { flex:1; min-width:200px; }
-  main { padding:14px 18px; }
-  .fact { border:1px solid #21262d; border-radius:8px; padding:10px 12px;
-          margin-bottom:8px; }
-  .meta { color:#8b949e; font-size:12px; margin-top:5px; }
+  :root { color-scheme: dark;
+    --bg:#0d1117; --fg:#c9d1d9; --muted:#8b949e; --card:#11161d; --border:#21262d;
+    --border2:#30363d; --title:#e6edf3; --radius:10px; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif; }
+  header { position:sticky; top:0; z-index:5; background:rgba(13,17,23,.85);
+           backdrop-filter:blur(8px); border-bottom:1px solid var(--border);
+           display:flex; gap:10px; align-items:center; padding:12px 18px; }
+  h1 { font-size:15px; margin:0; color:#58a6ff; font-weight:700; letter-spacing:-.01em; }
+  select,input { background:var(--bg); color:var(--fg); border:1px solid var(--border2);
+                 border-radius:8px; padding:7px 10px; font:inherit; }
+  input { flex:1; min-width:180px; }
+  main { max-width:820px; margin:0 auto; padding:22px 18px 80px; }
+  .card { position:relative; background:var(--card); border:1px solid var(--border);
+          border-radius:var(--radius); padding:14px 16px; margin-bottom:12px; transition:border-color .15s; }
+  .card:hover { border-color:var(--border2); }
+  .chead { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .badge { font:600 11px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.05em;
+           padding:4px 7px; border-radius:6px; color:#fff; background:var(--muted); }
+  .badge[data-type=feature]{background:#8957e5} .badge[data-type=change]{background:#238636}
+  .badge[data-type=bugfix]{background:#da3633}  .badge[data-type=refactor]{background:#1f6feb}
+  .badge[data-type=decision]{background:#9e6a03} .badge[data-type=discovery]{background:#57606a}
+  .badge[data-type=session_summary]{background:#bb8009}
+  .toggles { margin-inline-start:auto; display:flex; gap:4px; }
+  .toggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
+            border:1px solid var(--border2); border-radius:6px; padding:3px 8px; cursor:pointer; }
+  .toggle.active { color:var(--title); border-color:#58a6ff; }
+  .card .title { font-weight:650; color:var(--title); font-size:15px; margin-bottom:6px; }
+  .facts { margin:0; padding-inline-start:18px; }
+  .facts li { margin:3px 0; }
+  .narr { color:#adbac7; white-space:pre-wrap; }
+  .card .narr, .card[data-view=narr] .facts { display:none; }
+  .card[data-view=narr] .narr { display:block; }
+  .files { margin-top:10px; display:flex; flex-wrap:wrap; gap:5px; }
+  .file { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:#161b22;
+          border:1px solid var(--border); border-radius:5px; padding:2px 7px; }
+  .meta { color:var(--muted); font:12px ui-monospace,Menlo,monospace; margin-top:10px; }
   .score { color:#3fb950; }
-  .fact .title { font-weight:600; color:#e6edf3; margin-bottom:2px; }
-  .fact .narr { color:#adbac7; margin-top:5px; white-space:pre-wrap; }
-  .fact .files { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px; }
-  .fact .file { font-size:11px; color:#8b949e; background:#161b22; border:1px solid #21262d;
-                border-radius:5px; padding:1px 6px; }
-  .fact .kind { font-size:11px; color:#d29922; text-transform:uppercase; letter-spacing:.04em; }
-  .empty { color:#8b949e; padding:20px 0; }
-  #live { margin-inline-start:auto; font-size:12px; color:#8b949e; display:flex;
-          align-items:center; gap:6px; }
-  #live .dot { width:8px; height:8px; border-radius:50%; background:#3fb950;
-               box-shadow:0 0 6px #3fb950; }
-  #live.off .dot { background:#8b949e; box-shadow:none; }
-  .fact.flash { animation:flash 1.2s ease-out; }
-  @keyframes flash { from { border-color:#3fb950; } to { border-color:#21262d; } }
+  .card[data-type=session_summary]{ border-inline-start:3px solid #bb8009; background:#15130c; }
+  .summary-sec { margin-top:10px; }
+  .summary-sec h4 { margin:0 0 2px; font:600 12px ui-monospace,Menlo,monospace;
+                    text-transform:uppercase; letter-spacing:.04em; color:#e3b341; }
+  .summary-sec p { margin:0; color:#adbac7; white-space:pre-wrap; }
+  .empty { color:var(--muted); padding:24px 0; }
+  #live { margin-inline-start:auto; font:12px ui-monospace,Menlo,monospace; color:var(--muted);
+          display:flex; align-items:center; gap:6px; }
+  #live .dot { width:8px; height:8px; border-radius:50%; background:#3fb950; box-shadow:0 0 6px #3fb950; }
+  #live.off .dot { background:var(--muted); box-shadow:none; }
+  .card.flash { animation:flash 1.2s ease-out; }
+  @keyframes flash { from { border-color:#3fb950; } to { border-color:var(--border); } }
 </style></head>
 <body>
 <header>
@@ -85,15 +108,38 @@ async function loadProjects() {
   if (rows.some(r => r.project_key === prev)) sel.value = prev;  // keep selection across live refresh
   return rows.length;
 }
-function factHTML(r, flash) {
-  const when = new Date(r.created*1000).toISOString().slice(0,16).replace('T',' ');
-  const score = r.score==null ? '' : `<span class="score">${r.score}</span> · `;
-  const kind = (r.kind && r.kind!=='fact') ? `<div class="kind">${esc(r.kind)}</div>` : '';
-  const title = r.title ? `<div class="title">${esc(r.title)}</div>` : '';
-  const narr = r.narrative ? `<div class="narr">${esc(r.narrative)}</div>` : '';
-  const files = (r.files&&r.files.length)
-    ? `<div class="files">${r.files.map(f=>`<span class="file">${esc(f)}</span>`).join('')}</div>` : '';
-  return `<div class="${flash?'fact flash':'fact'}">${kind}${title}<div class="text">${esc(r.text)}</div>${narr}${files}<div class="meta">${score}${esc(r.kind)} · ${when}</div></div>`;
+function badge(c) {
+  const t = c.type || (c.kind==='session_summary'?'session_summary':'discovery');
+  return `<span class="badge" data-type="${esc(t)}">${esc(t.replace('_',' '))}</span>`;
+}
+function filesHTML(c) {
+  return (c.files&&c.files.length)
+    ? `<div class="files">${c.files.map(f=>`<span class="file">${esc(f)}</span>`).join('')}</div>` : '';
+}
+// A session summary's narrative is "Label: text" lines -> titled sections.
+function summaryHTML(c) {
+  const secs = (c.narrative||'').split('\\n').filter(Boolean).map(line => {
+    const i = line.indexOf(':');
+    const label = i>0 ? line.slice(0,i) : '';
+    const body = i>0 ? line.slice(i+1).trim() : line;
+    return `<div class="summary-sec"><h4>${esc(label)}</h4><p>${esc(body)}</p></div>`;
+  }).join('');
+  return secs || `<div class="narr">${esc(c.narrative||'')}</div>`;
+}
+function cardHTML(c, flash) {
+  const when = new Date(c.created*1000).toISOString().slice(0,16).replace('T',' ');
+  const score = c.score==null ? '' : `<span class="score">${c.score}</span> · `;
+  const title = c.title ? `<div class="title">${esc(c.title)}</div>` : '';
+  const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
+  const cls = `card${flash?' flash':''}`;
+  if (c.kind === 'session_summary') {
+    return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}</div>${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div>`;
+  }
+  const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
+  const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
+  const toggles = `<div class="toggles"><button class="toggle active" data-v="facts">facts</button>`
+    + (c.narrative ? `<button class="toggle" data-v="narr">narrative</button>` : '') + `</div>`;
+  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${toggles}</div>${title}${facts}${narr}${filesHTML(c)}${meta}</div>`;
 }
 async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
@@ -109,7 +155,7 @@ async function reload(flash) {
   const rows = q ? await fetchFacts() : await fetchFacts(`&limit=${PAGE}&offset=0`);
   if (mode === 'list') { offset = rows.length; exhausted = rows.length < PAGE; }
   $('#list').innerHTML = rows.length
-    ? rows.map(r => factHTML(r, flash)).join('')
+    ? rows.map(r => cardHTML(r, flash)).join('')
     : '<div class="empty">No facts.</div>';
 }
 // Infinite scroll: append the next page of the browse list. Inert during search.
@@ -118,9 +164,16 @@ async function loadMore() {
   loading = true;
   const rows = await fetchFacts(`&limit=${PAGE}&offset=${offset}`);
   offset += rows.length; exhausted = rows.length < PAGE;
-  if (rows.length) $('#list').insertAdjacentHTML('beforeend', rows.map(r => factHTML(r, false)).join(''));
+  if (rows.length) $('#list').insertAdjacentHTML('beforeend', rows.map(r => cardHTML(r, false)).join(''));
   loading = false;
 }
+// facts/narrative toggle (event delegation over the whole list)
+$('#list').addEventListener('click', e => {
+  const btn = e.target.closest('.toggle'); if (!btn) return;
+  const card = btn.closest('.card');
+  card.setAttribute('data-view', btn.dataset.v);
+  card.querySelectorAll('.toggle').forEach(b => b.classList.toggle('active', b === btn));
+});
 $('#project').addEventListener('change', () => reload());
 let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => reload(),180); });
 window.addEventListener('scroll', () => {
@@ -157,19 +210,26 @@ def _int_param(params: dict, name: str) -> int | None:
         return None
 
 
-def _fact_row(row, score) -> dict:
+def _card_from_rows(rows, score=None) -> dict:
+    """Build one card from an observation's fact rows (browse) or a single hit (search).
+
+    The rows of a group share title/narrative/type/files, so the head row carries the
+    card metadata; `facts` is the list of atomic texts (one element for a search hit).
+    """
+    head = rows[0]
     try:
-        files = json.loads(row["files"]) if row["files"] else []
+        files = json.loads(head["files"]) if head["files"] else []
     except (ValueError, TypeError):
         files = []
     return {
-        "text": row["text"],
-        "score": score,
-        "kind": row["kind"],
-        "created": row["created_at"],
-        "title": row["title"],
-        "narrative": row["narrative"],
+        "type": head["type"] or "",
+        "title": head["title"],
+        "narrative": head["narrative"],
         "files": files,
+        "kind": head["kind"],
+        "created": head["created_at"],
+        "score": score,
+        "facts": [row["text"] for row in rows],
     }
 
 
@@ -241,14 +301,15 @@ class Handler(BaseHTTPRequestHandler):
                 project = {"key": project_key, "path": "", "label": ""}
                 # Search ranks the whole active collection server-side, so it stays
                 # comprehensive regardless of how much the browse list has lazily loaded.
+                # Each hit renders as its own card (it carries its observation metadata).
                 k = store.active_count(project_key) or 1
                 hits = search(store, get_embedder(cfg), project, query, cfg, k=k, min_sim=-1.0)
-                out = [_fact_row(r, round(s, 3)) for s, r in hits]
+                out = [_card_from_rows([r], round(s, 3)) for s, r in hits]
             else:
                 limit = _int_param(params, "limit")
                 offset = _int_param(params, "offset") or 0
-                rows = store.rows_for_project(project_key, limit=limit, offset=offset)
-                out = [_fact_row(r, None) for r in rows]
+                groups = store.list_observations(project_key, limit=limit, offset=offset)
+                out = [_card_from_rows(rows) for rows in groups]
             store.close()
             self._send(200, json.dumps(out))
         else:
