@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
 from core.chunking import make_slug, split_markdown  # noqa: E402
-from core.code_symbols import extract_symbols  # noqa: E402
+from core.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
+from core import treesitter_symbols  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.embedding import HashEmbedding  # noqa: E402
 from core.indexer import index_project  # noqa: E402
@@ -306,6 +307,85 @@ class CodeIndexingTests(unittest.TestCase):
         outline = get_outline(self.store, self.project, kind="code_symbol")
         anchors = {s["anchor"] for s in outline["sections"]}
         self.assertEqual(anchors, {"connect_db", "Server", "Server.start"})
+
+
+def _has_treesitter() -> bool:
+    return treesitter_symbols.extract_symbols("def f(): pass\n", ".py") is not None
+
+
+class DispatcherFallbackTests(unittest.TestCase):
+    def test_python_dispatch_returns_symbols(self):
+        syms = {s.qualname for s in extract_code_symbols("def a():\n    pass\nclass B:\n    def c(self): pass\n", ".py")}
+        self.assertEqual(syms, {"a", "B", "B.c"})
+
+    def test_unsupported_extension_returns_empty(self):
+        self.assertEqual(extract_code_symbols("SELECT 1;", ".sql"), [])
+
+
+@unittest.skipUnless(_has_treesitter(), "tree-sitter not provisioned")
+class TreeSitterTests(unittest.TestCase):
+    def test_typescript_symbols(self):
+        src = (
+            "export function greet(n: string): string { return n; }\n"
+            "export const Widget = (p: Props) => null;\n"
+            "class Server {\n  start(): void {}\n  async stop() {}\n}\n"
+            "interface Config { port: number; }\n"
+            "type Id = string;\n"
+        )
+        syms = {s.qualname: s for s in treesitter_symbols.extract_symbols(src, ".tsx")}
+        self.assertEqual(syms["greet"].kind, "function")
+        self.assertEqual(syms["Widget"].kind, "function")  # const arrow
+        self.assertEqual(syms["Server.start"].kind, "method")
+        self.assertEqual(syms["Server.stop"].kind, "method")
+        self.assertEqual(syms["Config"].kind, "interface")
+        self.assertEqual(syms["Id"].kind, "type")
+
+    def test_ts_byte_spans_reproduce_body(self):
+        src = "function f(x: number): number {\n  return x;\n}\n"
+        cb = src.encode("utf-8")
+        for s in treesitter_symbols.extract_symbols(src, ".ts"):
+            self.assertEqual(cb[s.byte_start : s.byte_end].decode("utf-8", "ignore").rstrip(), s.body)
+
+    def test_python_via_treesitter_matches_ast_qualnames(self):
+        src = "def top(a):\n    return a\nclass C:\n    def m(self): pass\n"
+        ts_names = {s.qualname for s in treesitter_symbols.extract_symbols(src, ".py")}
+        ast_names = {s.qualname for s in extract_symbols(src, "")}
+        self.assertEqual(ts_names, ast_names)
+
+    def test_malformed_source_returns_empty_not_none(self):
+        self.assertEqual(treesitter_symbols.extract_symbols("function (", ".ts"), [])
+
+
+@unittest.skipUnless(_has_treesitter(), "tree-sitter not provisioned")
+class TypeScriptIndexingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.cfg = get_config()
+        self.store = Store(self.cfg.db_path)
+        self.embedder = HashEmbedding(dim=self.cfg.dim)
+        self.repo = tempfile.TemporaryDirectory()
+        self.project = {"key": "p", "path": self.repo.name, "label": "p"}
+        (Path(self.repo.name) / "widget.tsx").write_text(
+            "export const Button = (props: Props) => {\n  return null;\n};\n"
+            "export function connect(url: string): void {}\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+        self.repo.cleanup()
+
+    def test_index_and_search_tsx(self):
+        index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+        res = search_index(self.store, self.embedder, self.cfg, self.project, "connect url", k=5, kind="code_symbol")
+        anchors = {r["anchor"] for r in res["results"]}
+        self.assertIn("connect", anchors)
+        c = get_chunk(self.store, self.project, "Button")
+        self.assertTrue(c["found"])
+        self.assertEqual(c["freshness"], "fresh")
 
 
 if __name__ == "__main__":

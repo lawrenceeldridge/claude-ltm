@@ -166,22 +166,37 @@ def _section_freshness(project_root: str, row) -> str:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return "gone"
-    for anchor, body in _live_units(row["kind"], text, path.stem):
+    for anchor, body in _live_units(row["kind"], text, path):
         if anchor == row["anchor"]:
             live = hashlib.sha256(body.encode()).hexdigest()
             return "fresh" if live == row["content_hash"] else "edited"
     return "stale"  # the heading/symbol this anchor named no longer exists
 
 
-def _live_units(kind: str, text: str, stem: str):
-    """(anchor, body) pairs from the live file, parsed the same way the indexer did."""
+def _live_units(kind: str, text: str, path: Path):
+    """(anchor, body) pairs from the live file, parsed and disambiguated as the indexer did."""
     if kind == "code_symbol":
-        from core.code_symbols import extract_symbols
+        from core.code_symbols import extract_code_symbols
 
-        return [(s.qualname, s.body) for s in extract_symbols(text, stem)]
+        raw = [(s.qualname, s.body) for s in extract_code_symbols(text, path.suffix)]
+        return _dedupe_anchors(raw)  # match the indexer's overload disambiguation
     from core.chunking import split_markdown
 
-    return [(s.slug, s.body) for s in split_markdown(text, stem)]
+    return [(s.slug, s.body) for s in split_markdown(text, path.stem)]
+
+
+def _dedupe_anchors(units: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Suffix duplicate anchors ~2, ~3 … so freshness lookups match stored chunk anchors."""
+    seen: dict[str, int] = {}
+    out = []
+    for anchor, body in units:
+        if anchor in seen:
+            seen[anchor] += 1
+            anchor = f"{anchor}~{seen[anchor]}"
+        else:
+            seen[anchor] = 1
+        out.append((anchor, body))
+    return out
 
 
 def get_outline(

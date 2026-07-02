@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from core.chunking import split_markdown
-from core.code_symbols import extract_symbols
+from core.code_symbols import extract_code_symbols
 from core.config import Config
 from core.distill import get_distiller
 from core.embedding import EmbeddingGateway
@@ -29,7 +29,7 @@ from core.quantize import quantize_int8
 from core.store import Store
 
 _DOC_EXTENSIONS = {".md", ".markdown", ".mdx", ".mdc"}
-_CODE_EXTENSIONS = {".py"}
+_CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _INDEX_EXTENSIONS = _DOC_EXTENSIONS | _CODE_EXTENSIONS
 _SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next",
@@ -140,10 +140,10 @@ def _doc_units(source_path: str, text: str) -> list[dict]:
     return units
 
 
-def _code_units(text: str) -> list[dict]:
-    """Normalise Python symbols into index units. Anchor is the dotted qualname."""
+def _code_units(text: str, ext: str) -> list[dict]:
+    """Normalise code symbols into index units. Anchor is the dotted qualname."""
     units = []
-    for sym in extract_symbols(text, ""):
+    for sym in extract_code_symbols(text, ext):
         if not sym.body.strip():
             continue
         summary = f"{sym.signature} — {sym.docstring}" if sym.docstring else sym.signature
@@ -166,10 +166,19 @@ def _build_chunks(
     source_path: str,
     text: str,
 ) -> list[dict]:
-    is_code = Path(source_path).suffix.lower() in _CODE_EXTENSIONS
-    units = _code_units(text) if is_code else _doc_units(source_path, text)
+    ext = Path(source_path).suffix.lower()
+    is_code = ext in _CODE_EXTENSIONS
+    units = _code_units(text, ext) if is_code else _doc_units(source_path, text)
     records: list[dict] = []
+    seen_anchors: dict[str, int] = {}
     for unit in units:
+        anchor = unit["anchor"]  # disambiguate overloads / duplicate names within a file
+        if anchor in seen_anchors:
+            seen_anchors[anchor] += 1
+            anchor = f"{anchor}~{seen_anchors[anchor]}"
+        else:
+            seen_anchors[anchor] = 1
+        unit["anchor"] = anchor
         summary = unit["summary"]
         if distiller is not None and not is_code:  # LLM summaries only add value for prose
             summary = _llm_summary(distiller, unit["heading_path"], unit["body"]) or summary

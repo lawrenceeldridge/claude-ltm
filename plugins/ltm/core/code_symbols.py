@@ -108,3 +108,18 @@ def extract_symbols(text: str, module_stem: str) -> list[Symbol]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             emit(node, "", 0, in_class=False)
     return symbols
+
+
+def extract_code_symbols(text: str, ext: str) -> list[Symbol]:
+    """Symbols for a source file, tree-sitter first with a stdlib-``ast`` fallback for Python.
+
+    tree-sitter (when provisioned) handles Python + TS/TSX/JS/JSX from one grammar-driven
+    path. If it is unavailable, Python still indexes via the built-in ``ast`` extractor so
+    the plugin's own language never regresses; other languages simply aren't indexed.
+    """
+    from core import treesitter_symbols  # lazy: avoids importing tree-sitter when unused
+
+    via_ts = treesitter_symbols.extract_symbols(text, ext)
+    if via_ts is not None:
+        return via_ts
+    return extract_symbols(text, "") if ext.lower() == ".py" else []

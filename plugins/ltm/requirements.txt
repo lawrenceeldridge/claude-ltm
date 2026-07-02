@@ -1,3 +1,9 @@
-# Embedding backend dependencies for the self-provisioned venv (embedding=fastembed).
-# fastembed pulls in onnxruntime + tokenizers; nothing else is required.
+# Dependencies for the self-provisioned venv. Installed once into a private venv
+# under CLAUDE_PLUGIN_DATA; the hooks re-exec into it (see bin/_bootstrap.py).
+#
+# fastembed  — semantic embeddings (embedding=fastembed); pulls onnxruntime + tokenizers.
+# tree-sitter-language-pack — multi-language code parsing for the code index. Pinned to
+#   the 0.x line: the 1.x wrapper ships an incompatible parse() binding. When absent,
+#   code indexing falls back to stdlib `ast` for Python and skips other languages.
 fastembed
+tree-sitter-language-pack>=0.7.0,<1.0.0
