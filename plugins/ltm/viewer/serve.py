@@ -57,7 +57,7 @@ PAGE = """<!doctype html>
   .badge[data-type=feature]{background:#8957e5} .badge[data-type=change]{background:#238636}
   .badge[data-type=bugfix]{background:#da3633}  .badge[data-type=refactor]{background:#1f6feb}
   .badge[data-type=decision]{background:#9e6a03} .badge[data-type=discovery]{background:#57606a}
-  .badge[data-type=session_summary]{background:#bb8009}
+  .badge[data-type=session_summary]{background:#bb8009} .badge[data-type=prompt]{background:#8250df}
   .toggles { margin-inline-start:auto; display:flex; gap:4px; }
   .toggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
             border:1px solid var(--border2); border-radius:6px; padding:3px 8px; cursor:pointer; }
@@ -68,13 +68,15 @@ PAGE = """<!doctype html>
   .facts li { margin:3px 0; }
   .narr { color:#adbac7; white-space:pre-wrap; }
   .facts, .narr { display:none; }            /* collapsed by default — title/text first */
-  .facts.open, .narr.open { display:block; }
+  .facts.open, .narr.open { display:block; margin-top:12px; }  /* gap so stacked sections read clearly */
   .files { margin-top:10px; display:flex; flex-wrap:wrap; gap:5px; }
   .file { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:#161b22;
           border:1px solid var(--border); border-radius:5px; padding:2px 7px; }
   .meta { color:var(--muted); font:12px ui-monospace,Menlo,monospace; margin-top:10px; }
   .score { color:#3fb950; }
   .card[data-type=session_summary]{ border-inline-start:3px solid #bb8009; background:#15130c; }
+  .card[data-type=prompt]{ border-inline-start:3px solid #8250df; background:#131022; }
+  .prompt { color:#c9d1d9; white-space:pre-wrap; }
   .summary-sec { margin-top:10px; }
   .summary-sec h4 { margin:0 0 2px; font:600 12px ui-monospace,Menlo,monospace;
                     text-transform:uppercase; letter-spacing:.04em; color:#e3b341; }
@@ -139,6 +141,10 @@ function cardHTML(c, flash) {
   const subtitle = c.subtitle ? `<div class="subtitle">${esc(c.subtitle)}</div>` : '';
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
+  if (c.kind === 'prompt') {
+    const text = (c.facts && c.facts[0]) ? c.facts[0] : '';
+    return `<div class="${cls}" data-type="prompt"><div class="chead">${badge(c)}</div><div class="cinner"><div class="prompt">${esc(text)}</div>${meta}</div></div>`;
+  }
   if (c.kind === 'session_summary') {
     return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }

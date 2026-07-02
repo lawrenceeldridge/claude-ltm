@@ -186,6 +186,17 @@ class RecallStructuredTests(unittest.TestCase):
         self.assertEqual(groups[0][0]["title"], "B")  # newest group first
         self.assertEqual([r["text"] for r in groups[1]], ["a1", "a2"])  # group keeps its facts
 
+    def test_capture_prompts_stores_verbatim(self):
+        from core.service import capture_prompts
+
+        prompt = "Please add a subtitle field — 1:1, not distilled."
+        n = capture_prompts(self.store, self.embedder, self.cfg, self.project, "s1", [prompt])
+        self.assertEqual(n, 1)
+        rows = [r for r in self.store.rows_for_project(self.project["key"]) if r["kind"] == "prompt"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], prompt)  # verbatim, unchanged
+        self.assertEqual(rows[0]["type"], "prompt")
+
     def test_dim_divergence_returns_embedding_mismatch(self):
         service.add_facts(
             self.store, self.embedder, self.cfg, self.project, "s1",
@@ -303,6 +314,30 @@ class DistillStructuredTests(unittest.TestCase):
         from core.distill import parse_summary
 
         self.assertIsNone(parse_summary("not json at all"))
+
+    def test_extract_incremental_parts_returns_verbatim_prompt(self):
+        import os
+        import tempfile
+
+        from core.transcript import extract_incremental_parts
+
+        rows = [
+            json.dumps({"type": "user", "message": {"role": "user", "content": "Fix the timezone bug please."}}),
+            json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Done."},
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": "serve.py"}}]}}),
+            json.dumps({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": "ok"}]}}),  # tool result -> not a prompt
+        ]
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(rows))
+        try:
+            text, prompts, _end = extract_incremental_parts(path, 0)
+            self.assertEqual(prompts, ["Fix the timezone bug please."])
+            self.assertIn("Edited serve.py", text)
+        finally:
+            os.unlink(path)
 
     def test_parse_observations_and_expand_to_grouped_facts(self):
         from core.distill import observations_to_facts, parse_observations

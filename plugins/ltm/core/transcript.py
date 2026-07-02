@@ -121,6 +121,32 @@ def _lines_to_parts(lines) -> list[str]:
     return parts
 
 
+def _prompt_lines(lines) -> list[str]:
+    """Verbatim user prompts in the transcript — a 1:1 copy of what the user sent.
+
+    Reuses the user-role cleaning (drops system-reminders and harness scaffolding),
+    but does NOT distil: each returned string is the user's message text as typed.
+    Tool-result messages (also role 'user') carry no text block, so they drop out.
+    """
+    prompts: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = obj.get("message") or {}
+        role = obj.get("type") or message.get("role")
+        if role != "user":
+            continue
+        text = "\n".join(_content_lines(message.get("content", obj.get("content")), "user")).strip()
+        if text:
+            prompts.append(text)
+    return prompts
+
+
 def extract_text(transcript_path: str) -> str:
     try:
         with open(transcript_path, encoding="utf-8") as fh:
@@ -129,19 +155,17 @@ def extract_text(transcript_path: str) -> str:
         return ""
 
 
-def extract_incremental(transcript_path: str, start_offset: int = 0) -> tuple[str, int]:
-    """Extract only the transcript appended since ``start_offset`` bytes.
+def _read_delta(transcript_path: str, start_offset: int) -> tuple[list[str], int]:
+    """Read the transcript bytes appended since ``start_offset``; return (lines, end).
 
-    Returns ``(text, end_offset)``. JSONL is append-only and newline-delimited, so
-    a stored end-of-content byte offset always lands on a line boundary — the next
-    call reads just the new turns. If the file shrank (rotated/truncated) the
-    offset is reset to 0 so nothing is silently skipped. Read in binary and split,
-    because a text-mode file can't be seeked-then-line-iterated with a valid tell.
+    JSONL is append-only and newline-delimited, so an end-of-content byte offset
+    always lands on a line boundary. A shrunk file (rotated/truncated) resets to 0.
+    Read in binary because a text-mode file can't be seeked-then-line-iterated.
     """
     try:
         size = os.path.getsize(transcript_path)
     except OSError:
-        return "", start_offset
+        return [], start_offset
     if start_offset > size:
         start_offset = 0
     try:
@@ -149,7 +173,17 @@ def extract_incremental(transcript_path: str, start_offset: int = 0) -> tuple[st
             fh.seek(start_offset)
             data = fh.read()
     except OSError:
-        return "", start_offset
-    end_offset = start_offset + len(data)
-    lines = data.decode("utf-8", errors="ignore").splitlines()
-    return "\n".join(_lines_to_parts(lines)), end_offset
+        return [], start_offset
+    return data.decode("utf-8", errors="ignore").splitlines(), start_offset + len(data)
+
+
+def extract_incremental(transcript_path: str, start_offset: int = 0) -> tuple[str, int]:
+    """Assistant/user text appended since ``start_offset``. Returns (text, end_offset)."""
+    lines, end = _read_delta(transcript_path, start_offset)
+    return "\n".join(_lines_to_parts(lines)), end
+
+
+def extract_incremental_parts(transcript_path: str, start_offset: int = 0) -> tuple[str, list[str], int]:
+    """One read of the delta → (distillable_text, verbatim_user_prompts, end_offset)."""
+    lines, end = _read_delta(transcript_path, start_offset)
+    return "\n".join(_lines_to_parts(lines)), _prompt_lines(lines), end

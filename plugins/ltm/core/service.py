@@ -19,7 +19,7 @@ from core.project import Project
 from core.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.recall import render_block, search, search_fused
 from core.store import Store
-from core.transcript import extract_incremental, extract_text
+from core.transcript import extract_incremental_parts, extract_text
 
 
 def _find_superseded(store: Store, project_key: str, vec: list[float], threshold: float) -> list[str]:
@@ -152,6 +152,45 @@ def capture_session_summary(
     return add_records(store, embedder, cfg, project, session_id, [summary], kind="session_summary")
 
 
+def capture_prompts(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    prompts: list[str],
+) -> int:
+    """Store user prompts verbatim (kind='prompt') — a 1:1 copy, not distilled.
+
+    Embedded so they stay recallable and FTS-indexed, but never superseded: a prompt
+    records what was asked, not a claim that can go stale.
+    """
+    inserted = 0
+    now = time.time()
+    for prompt in prompts:
+        fid = store.fact_id(project["key"], prompt)
+        if store.exists(fid):
+            store.reinforce(fid, now)
+            continue
+        vec = embedder.embed_one(prompt)
+        blob, scale = quantize_int8(vec)
+        store.add(
+            project=project,
+            session_id=session_id,
+            kind="prompt",
+            type="prompt",
+            text=prompt,
+            vec_int8=blob,
+            scale=scale,
+            dim=len(vec),
+            vec_bits=pack_bits(vec),
+            importance=0.5,
+            created_at=now,
+        )
+        inserted += 1
+    return inserted
+
+
 def capture_transcript_incremental(
     store: Store,
     embedder: EmbeddingGateway,
@@ -165,14 +204,16 @@ def capture_transcript_incremental(
     The per-turn Stop hook fires repeatedly on a growing transcript; re-distilling
     the whole thing each time is slow and — for a small local model — degrades into
     narration or hallucination. Reading just the new turns keeps each capture small,
-    fast and crisp, and cheap enough to run every turn. The cursor advances even
-    when the delta yields no facts, so nothing is reprocessed.
+    fast and crisp, and cheap enough to run every turn. User prompts in the delta are
+    stored verbatim alongside the distilled facts. The cursor advances even when the
+    delta yields no facts, so nothing is reprocessed.
     """
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
-    text, end = extract_incremental(transcript_path, start)
+    text, prompts, end = extract_incremental_parts(transcript_path, start)
     if end == start:
         return 0
+    capture_prompts(store, embedder, cfg, project, session_id, prompts)
     inserted = capture_text(store, embedder, cfg, project, session_id, text) if text.strip() else 0
     store.set_capture_cursor(cursor_key, end)
     return inserted
