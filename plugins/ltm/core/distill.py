@@ -283,9 +283,28 @@ def observations_to_facts(observations: list[Observation]) -> list[DistilledFact
     return records
 
 
+# Cap the transcript handed to an LLM: an oversized turn otherwise exceeds the distiller
+# timeout, silently dropping the whole capture to the heuristic line-splitter (untitled
+# "discovery" noise). Head+tail keeps a turn's intent and outcome. Sized so a local ~14B
+# model stays under a 120s budget (measured: ~24KB ≈ 30s, ~117KB times out).
+_MAX_INPUT_CHARS = 24000
+
+
+def _clip(text: str, limit: int = _MAX_INPUT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    head = limit * 2 // 5
+    tail = limit - head
+    return f"{text[:head]}\n\n…[{len(text) - limit} characters omitted]…\n\n{text[-tail:]}"
+
+
 def _build_prompt(text: str, existing: list[tuple[str, str]]) -> str:
     existing_block = "\n".join(f"{fid}: {ftext}" for fid, ftext in existing) or "(none)"
-    return _PROMPT.format(existing=existing_block, transcript=text)
+    return _PROMPT.format(existing=existing_block, transcript=_clip(text))
+
+
+def _build_summary_prompt(text: str) -> str:
+    return _SUMMARY_PROMPT.format(transcript=_clip(text))
 
 
 _SUMMARY_PROMPT = """Summarise this coding-assistant session as one durable memory.
@@ -361,7 +380,7 @@ class ClaudeCliDistiller(Distiller):
 
     def summarize(self, text: str) -> DistilledFact | None:
         try:
-            return parse_summary(self._complete(_SUMMARY_PROMPT.format(transcript=text)))
+            return parse_summary(self._complete(_build_summary_prompt(text)))
         except Exception:
             return None
 
@@ -412,7 +431,7 @@ class HTTPDistiller(Distiller):
 
     def summarize(self, text: str) -> DistilledFact | None:
         try:
-            return parse_summary(self._complete(_SUMMARY_PROMPT.format(transcript=text)))
+            return parse_summary(self._complete(_build_summary_prompt(text)))
         except Exception:
             return None
 

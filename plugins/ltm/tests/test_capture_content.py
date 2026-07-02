@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.distill import heuristic_facts  # noqa: E402
+from core.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
 from core.transcript import extract_text  # noqa: E402
 
 
@@ -101,6 +101,24 @@ class HeuristicBiasTests(unittest.TestCase):
         facts = heuristic_facts("<command-args></command-args>\nWrote mcp_server.py for the recall tool.")
         self.assertNotIn("<command-args></command-args>", facts)
         self.assertIn("Wrote mcp_server.py for the recall tool.", facts)
+
+
+class ClipTests(unittest.TestCase):
+    def test_small_input_unchanged(self):
+        text = "a short delta"
+        self.assertEqual(_clip(text), text)
+
+    def test_oversized_input_bounded_with_marker(self):
+        text = "H" * 5000 + "M" * 200000 + "T" * 5000
+        clipped = _clip(text)
+        self.assertLessEqual(len(clipped), _MAX_INPUT_CHARS + 60)
+        self.assertIn("characters omitted", clipped)
+
+    def test_clip_keeps_head_and_tail(self):
+        text = "HEADSTART" + "x" * 100000 + "TAILEND"
+        clipped = _clip(text)
+        self.assertTrue(clipped.startswith("HEADSTART"))
+        self.assertTrue(clipped.endswith("TAILEND"))
 
 
 if __name__ == "__main__":
