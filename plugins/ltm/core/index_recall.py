@@ -211,6 +211,7 @@ def get_outline(
             {
                 "anchor": r["anchor"],
                 "title": r["title"],
+                "kind": r["kind"],
                 "heading_path": r["heading_path"],
                 "level": r["level"],
                 "source_path": r["source_path"],
