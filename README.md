@@ -103,7 +103,7 @@ claude-ltm/
     │   ├── mcp_server.py               #   MCP tools (recall, search_code, get_symbol, …)
     │   └── daemon.py                   #   optional resident embedder
     ├── bench/                          # labelled recall benchmark + dataset
-    ├── viewer/                         # localhost browser (stdlib http.server) — memory + index views
+    ├── viewer/                         # localhost browser (stdlib http.server) — STM / LTM / RnR / index tabs
     └── tests/                          # stdlib unittest / pytest suite
 ```
 
@@ -166,7 +166,7 @@ ltm sweep [--all]       archive stale facts (TTL expiry; --days N to override)
 ltm consolidate [--all] run the sleep pass: promote recalled STM, prune (if enabled)
 ltm nats status|start|stop  manage the opt-in NATS server (bus=nats)
 ltm daemon              run the resident daemon (keeps the embedder warm)
-ltm viewer              launch the localhost viewer
+ltm viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
 ltm eval --backends …   benchmark embedding backends (see below)
 ltm demo                capture sample facts then recall (end-to-end proof)
 ```
