@@ -79,6 +79,10 @@ class Config:
     stm_capacity: int
     promote_after_freq: int
     stm_recall_weight: float
+    bus: str
+    bus_max_deliver: int
+    bus_backoff: tuple[float, ...]
+    lease_ttl: float
     distiller: str
     distiller_cmd: str
     distiller_model: str
@@ -120,6 +124,12 @@ def get_config() -> Config:
         stm_capacity=int(_num(_opt("stm_capacity", "0"), 0)),
         promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
         stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
+        # Durable work queue (MemoryBus). inproc = stdlib SQLite queue (default);
+        # nats = opt-in JetStream adapter (Phase 5), fail-open to inproc.
+        bus=_opt("bus", "inproc"),
+        bus_max_deliver=int(_num(_opt("bus_max_deliver", "5"), 5)),
+        bus_backoff=tuple(float(x) for x in _opt("bus_backoff", "5,30,120,600").split(",") if x.strip()),
+        lease_ttl=_num(_opt("lease_ttl", "300"), 300),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),
         distiller_model=_opt("distiller_model", ""),

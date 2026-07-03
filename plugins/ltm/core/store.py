@@ -272,6 +272,31 @@ def _v9_stm(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_facts_tier ON facts(project_key, tier, status)")
 
 
+def _v10_work_queue(db: sqlite3.Connection) -> None:
+    # Durable Command queue for the MemoryBus inproc adapter — the at-least-once,
+    # retry-able form of detached capture (survives dropped connections / distiller
+    # outages). msg_id is a content hash → idempotent publish. ack deletes the row;
+    # nak reschedules (next_retry_at); a lease (lease_expires) makes an interrupted
+    # claim reclaimable (crash recovery); exhausted retries land in status='dead'.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS work_queue ("
+        "  msg_id        TEXT PRIMARY KEY,"
+        "  stage         TEXT NOT NULL,"
+        "  project_key   TEXT NOT NULL,"
+        "  session_id    TEXT,"
+        "  ref           TEXT,"
+        "  payload       TEXT,"
+        "  status        TEXT NOT NULL DEFAULT 'pending',"  # pending | in_progress | dead
+        "  attempts      INTEGER DEFAULT 0,"
+        "  next_retry_at REAL DEFAULT 0,"
+        "  lease_owner   TEXT,"
+        "  lease_expires REAL DEFAULT 0,"
+        "  enqueued_at   REAL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_work_claim ON work_queue(stage, status, next_retry_at);"
+    )
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -286,6 +311,7 @@ _MIGRATIONS = [
     _v7_index,
     _v8_redistill,
     _v9_stm,
+    _v10_work_queue,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -838,6 +864,101 @@ class Store:
         self.db.execute("UPDATE pending_redistill SET attempts = attempts + 1 WHERE id = ?", (entry_id,))
         self.db.execute("DELETE FROM pending_redistill WHERE id = ? AND attempts >= ?", (entry_id, max_attempts))
         self.db.commit()
+
+    # ---- Durable work queue (MemoryBus inproc adapter) ----------------------------
+
+    def enqueue_work(
+        self,
+        *,
+        msg_id: str,
+        stage: str,
+        project_key: str,
+        session_id: str = "",
+        ref: str = "",
+        payload: str = "",
+        now: float | None = None,
+    ) -> bool:
+        """Publish a work item; idempotent on ``msg_id`` (INSERT OR IGNORE). True if new."""
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO work_queue "
+            "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
+            " next_retry_at, lease_owner, lease_expires, enqueued_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, NULL, 0, ?)",
+            (msg_id, stage, project_key, session_id, ref, payload, now if now is not None else time.time()),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def claim_work(
+        self, stage: str, limit: int, now: float | None = None, lease_ttl: float = 300.0, owner: str = "worker"
+    ) -> list[sqlite3.Row]:
+        """Lease up to ``limit`` due items for ``stage``, FIFO. Increments delivery count.
+
+        Claimable = pending-and-due, or in_progress whose lease has expired (an
+        interrupted worker's items — crash recovery). Sets a fresh lease and bumps
+        ``attempts`` so the delivery count survives across workers.
+        """
+        now = now if now is not None else time.time()
+        rows = self.db.execute(
+            "SELECT * FROM work_queue WHERE stage = ? AND next_retry_at <= ? AND "
+            "(status = 'pending' OR (status = 'in_progress' AND lease_expires < ?)) "
+            "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
+            (stage, now, now, limit),
+        ).fetchall()
+        for row in rows:
+            self.db.execute(
+                "UPDATE work_queue SET status = 'in_progress', lease_owner = ?, lease_expires = ?, "
+                "attempts = attempts + 1 WHERE msg_id = ?",
+                (owner, now + lease_ttl, row["msg_id"]),
+            )
+        self.db.commit()
+        return rows
+
+    def ack_work(self, msg_id: str) -> None:
+        """Work done — remove it from the queue."""
+        self.db.execute("DELETE FROM work_queue WHERE msg_id = ?", (msg_id,))
+        self.db.commit()
+
+    def nak_work(self, msg_id: str, delay: float = 0.0, now: float | None = None) -> None:
+        """Return work for retry after ``delay`` seconds; clears the lease."""
+        now = now if now is not None else time.time()
+        self.db.execute(
+            "UPDATE work_queue SET status = 'pending', next_retry_at = ?, lease_owner = NULL, lease_expires = 0 "
+            "WHERE msg_id = ?",
+            (now + delay, msg_id),
+        )
+        self.db.commit()
+
+    def dead_work(self, msg_id: str) -> None:
+        """Dead-letter — retries exhausted or terminally unprocessable. Kept for inspection."""
+        self.db.execute(
+            "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 WHERE msg_id = ?",
+            (msg_id,),
+        )
+        self.db.commit()
+
+    def reclaim_expired(self, now: float | None = None) -> int:
+        """Return interrupted (expired-lease) in_progress items to pending. Crash recovery."""
+        now = now if now is not None else time.time()
+        cur = self.db.execute(
+            "UPDATE work_queue SET status = 'pending', lease_owner = NULL, lease_expires = 0 "
+            "WHERE status = 'in_progress' AND lease_expires < ?",
+            (now,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def count_work(self, stage: str | None = None, status: str | None = None) -> int:
+        """Count work items, optionally filtered by stage/status (inspection, tests)."""
+        sql = "SELECT COUNT(*) FROM work_queue WHERE 1=1"
+        params: list = []
+        if stage is not None:
+            sql += " AND stage = ?"
+            params.append(stage)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        return self.db.execute(sql, params).fetchone()[0]
 
     def delete_facts(self, fact_ids: list[str]) -> int:
         """Hard-delete facts by id (FTS stays in sync via the delete trigger). Used by recovery."""
