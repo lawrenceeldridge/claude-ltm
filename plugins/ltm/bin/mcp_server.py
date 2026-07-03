@@ -30,6 +30,18 @@ ROOT = plugin_root()
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "ltm-memory", "version": "0.6.0"}
 
+# Surfaced to the model at initialize (MCP servers may return `instructions` that clients
+# inject as always-present guidance). A soft, zero-cost nudge that complements the hook-based
+# enforcement — it does not depend on any hook firing.
+INSTRUCTIONS = (
+    "This project's long-term memory and code/docs index. Consult it FIRST — before a broad "
+    "search or reading files whole (measured ~2/3 fewer tokens on lookups): call `recall` for "
+    "prior decisions/facts, and `search_code` / `search_docs` for indexed symbols / doc sections, "
+    "then `get_symbol` / `get_doc_section` for the exact span. This applies to Grep/Glob and to "
+    "grep/rg/find via Bash. Trust confident hits and skip the wider search; widen only when "
+    "memory/index comes back weak or empty."
+)
+
 TOOLS = [
     {
         "name": "recall",
@@ -405,6 +417,7 @@ def _handle(request: dict) -> dict | None:
             "protocolVersion": (request.get("params") or {}).get("protocolVersion", PROTOCOL_VERSION),
             "capabilities": {"tools": {}},
             "serverInfo": SERVER_INFO,
+            "instructions": INSTRUCTIONS,
         }
     elif method == "tools/list":
         result = {"tools": TOOLS}
