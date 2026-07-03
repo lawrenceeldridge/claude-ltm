@@ -376,6 +376,25 @@ def _int_param(params: dict, name: str) -> int | None:
         return None
 
 
+def _disambiguate_labels(items: list[dict]) -> list[dict]:
+    """Make dropdown labels unique when project basenames collide.
+
+    Two distinct projects can share a basename (e.g. ``…/sak-replicate/backend`` and
+    ``…/sak-assistant/backend`` both label ``backend``). The keys are unique, but the
+    label alone is ambiguous — so prefix the parent directory (``sak-replicate/backend``)
+    for any colliding label. Display-only; project keys are never touched.
+    """
+    from collections import Counter
+
+    counts = Counter(it["label"] for it in items)
+    for it in items:
+        if counts[it["label"]] > 1 and it.get("path"):
+            parent = os.path.basename(os.path.dirname(it["path"]))
+            if parent:
+                it["label"] = f"{parent}/{it['label']}"
+    return items
+
+
 def _tcp_ok(url: str, timeout: float = 0.6) -> bool:
     """Best-effort TCP reachability for a host:port URL (nats://, http://, https://).
 
@@ -526,10 +545,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(_service_health(cfg)))
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
-            out = [
-                {"project_key": r["project_key"], "label": r["project_label"], "count": r["c"]}
-                for r in store.projects()
-            ]
+            out = _disambiguate_labels(
+                [
+                    {
+                        "project_key": r["project_key"],
+                        "label": r["project_label"],
+                        "path": r["project_path"],
+                        "count": r["c"],
+                    }
+                    for r in store.projects()
+                ]
+            )
             store.close()
             self._send(200, json.dumps(out))
         elif parsed.path == "/api/facts":
@@ -577,15 +603,18 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/index_projects":
             store = Store(cfg.db_path)
             labels = {r["project_key"]: (r["project_label"], r["project_path"]) for r in store.projects()}
-            out = [
-                {
-                    "project_key": r["project_key"],
-                    "label": (labels.get(r["project_key"]) or (r["project_key"], ""))[0],
-                    "files": r["files"],
-                    "count": r["c"],
-                }
-                for r in store.chunk_projects()
-            ]
+            out = _disambiguate_labels(
+                [
+                    {
+                        "project_key": r["project_key"],
+                        "label": (labels.get(r["project_key"]) or (r["project_key"], ""))[0],
+                        "path": (labels.get(r["project_key"]) or ("", ""))[1],
+                        "files": r["files"],
+                        "count": r["c"],
+                    }
+                    for r in store.chunk_projects()
+                ]
+            )
             store.close()
             self._send(200, json.dumps(out))
         elif parsed.path == "/api/index":

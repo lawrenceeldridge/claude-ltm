@@ -16,7 +16,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
-from viewer.serve import _service_health, _tcp_ok  # noqa: E402
+from viewer.serve import _disambiguate_labels, _service_health, _tcp_ok  # noqa: E402
+
+
+class DisambiguateLabelsTests(unittest.TestCase):
+    def test_colliding_basenames_get_parent_prefix(self):
+        items = [
+            {"label": "backend", "path": "/x/sak-replicate/backend"},
+            {"label": "backend", "path": "/x/sak-assistant/backend"},
+            {"label": "claude-ltm", "path": "/y/claude-ltm"},
+        ]
+        got = {it["label"] for it in _disambiguate_labels(items)}
+        self.assertEqual(got, {"sak-replicate/backend", "sak-assistant/backend", "claude-ltm"})
+
+    def test_unique_labels_untouched(self):
+        items = [{"label": "a", "path": "/p/a"}, {"label": "b", "path": "/p/b"}]
+        self.assertEqual([it["label"] for it in _disambiguate_labels(items)], ["a", "b"])
 
 
 class TcpOkTests(unittest.TestCase):

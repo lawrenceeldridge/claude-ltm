@@ -320,9 +320,15 @@ walk up to the nearest `.git` / `pyproject.toml` / `package.json` / `go.mod` /
 path. This avoids the `basename(cwd)` fragmentation that mis-files memory in
 monorepos and subdirectory launches.
 
+Drop an empty **`.ltm-root`** file in a directory to pin it as the project root — it
+takes precedence over the marker-walk. Use it when a repo's subfolders each carry
+their own marker (a plugin package, an app's `backend/` + `frontend/`) and would
+otherwise split into separate projects: one `.ltm-root` at the repo/app root
+collapses them into a single project. The nearest `.ltm-root` ancestor wins.
+
 ## Status
 
-Working end to end (199 tests, 10 skipped). Defaults are local-first and
+Working end to end (206 tests, 10 skipped). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
