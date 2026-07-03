@@ -134,15 +134,19 @@ def capture_text(
         payload = json.dumps(
             {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
         )
-        get_bus(cfg, store).publish(
-            WorkItem(
-                stage="rescue",
-                project_key=project["key"],
-                msg_id="rescue:" + store.fact_id(project["key"], text),
-                session_id=session_id,
-                payload=payload,
+        bus = get_bus(cfg, store)
+        try:
+            bus.publish(
+                WorkItem(
+                    stage="rescue",
+                    project_key=project["key"],
+                    msg_id="rescue:" + store.fact_id(project["key"], text),
+                    session_id=session_id,
+                    payload=payload,
+                )
             )
-        )
+        finally:
+            bus.close()
     return inserted
 
 
@@ -159,25 +163,28 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
     if cfg.distiller not in _LLM_DISTILLERS:
         return 0
     bus = get_bus(cfg, store)
-    distiller = get_distiller(cfg)
-    recovered = 0
-    for lease in bus.pull("rescue", limit):
-        try:
-            data = json.loads(lease.item.payload)
-        except (ValueError, TypeError):
-            lease.term()  # unparseable payload — dead-letter, never retry
-            continue
-        project = store.project_meta(data.get("project_key", ""))
-        existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
-        records = distiller.distill(data.get("text", ""), existing)
-        if records and not all(r.degraded for r in records):
-            store.delete_facts(data.get("fact_ids") or [])
-            add_records(store, embedder, cfg, project, data.get("session_id", ""), records)
-            lease.ack()
-            recovered += 1
-        else:
-            lease.nak()  # still degraded — retry later; dead-letters past bus_max_deliver
-    return recovered
+    try:
+        distiller = get_distiller(cfg)
+        recovered = 0
+        for lease in bus.pull("rescue", limit):
+            try:
+                data = json.loads(lease.item.payload)
+            except (ValueError, TypeError):
+                lease.term()  # unparseable payload — dead-letter, never retry
+                continue
+            project = store.project_meta(data.get("project_key", ""))
+            existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
+            records = distiller.distill(data.get("text", ""), existing)
+            if records and not all(r.degraded for r in records):
+                store.delete_facts(data.get("fact_ids") or [])
+                add_records(store, embedder, cfg, project, data.get("session_id", ""), records)
+                lease.ack()
+                recovered += 1
+            else:
+                lease.nak()  # still degraded — retry later; dead-letters past bus_max_deliver
+        return recovered
+    finally:
+        bus.close()
 
 
 def capture_transcript(

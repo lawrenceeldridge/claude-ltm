@@ -151,8 +151,10 @@ class InprocBusTests(unittest.TestCase):
         self.assertIsInstance(get_bus(self.cfg, self.store), MemoryBus)
 
     def test_get_bus_falls_open_to_inproc_when_nats_unavailable(self):
-        # nats adapter is not built yet (Phase 5) -> ImportError -> inproc fallback.
-        cfg_nats = replace(self.cfg, bus="nats")
+        # bus=nats but the server is unreachable (dead port) -> fail open to inproc.
+        # Deterministic whether or not nats-py is installed: ImportError OR connect
+        # failure both fall through to inproc.
+        cfg_nats = replace(self.cfg, bus="nats", nats_url="nats://127.0.0.1:1")
         self.assertIsInstance(get_bus(cfg_nats, self.store), InprocBus)
 
 

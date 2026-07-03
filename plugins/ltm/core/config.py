@@ -83,6 +83,8 @@ class Config:
     bus_max_deliver: int
     bus_backoff: tuple[float, ...]
     lease_ttl: float
+    nats_url: str
+    nats_stream: str
     retention_keep_max: int
     prune_threshold: float
     purge_horizon_days: float
@@ -133,6 +135,8 @@ def get_config() -> Config:
         bus_max_deliver=int(_num(_opt("bus_max_deliver", "5"), 5)),
         bus_backoff=tuple(float(x) for x in _opt("bus_backoff", "5,30,120,600").split(",") if x.strip()),
         lease_ttl=_num(_opt("lease_ttl", "300"), 300),
+        nats_url=_opt("nats_url", "nats://localhost:4222"),
+        nats_stream=_opt("nats_stream", "LTM_WORK"),
         # Consolidation (sleep pass). All default-off: pruning is retrieval-affecting
         # and stays disabled until the retention weights are `ltm eval`-tuned.
         retention_keep_max=int(_num(_opt("retention_keep_max", "0"), 0)),

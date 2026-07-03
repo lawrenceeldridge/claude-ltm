@@ -68,21 +68,29 @@ class MemoryBus(ABC):
     def pull(self, stage: str, max_items: int = 16) -> list[Lease]:
         """Claim up to ``max_items`` due items for ``stage`` (leased; crash-safe)."""
 
+    def close(self) -> None:
+        """Release any resources (a network connection). No-op for in-process adapters."""
+
 
 def get_bus(cfg, store) -> MemoryBus:
     """Composition-root selection — Plugin pattern. Fails open to inproc.
 
     ``inproc`` (default) uses the SQLite ``work_queue`` in ``store``. ``nats`` uses
-    the JetStream adapter; if it is absent (not yet built) or unreachable, we fall
-    back to ``inproc`` so a bus misconfiguration never breaks capture.
+    the JetStream adapter; if ``nats-py`` is absent **or the server is unreachable**
+    we fall back to ``inproc`` so a bus misconfiguration never breaks capture. The
+    connectivity probe happens here (off the hot path) so callers get a working bus.
     """
     if getattr(cfg, "bus", "inproc") == "nats":
+        bus = None
         try:
             from core.adapters.nats_bus import NatsBus
 
-            return NatsBus(cfg, store)
+            bus = NatsBus(cfg, store)
+            bus.connect()  # connect now so a dead server fails open here, not mid-capture
+            return bus
         except Exception:
-            pass  # fail open ↓
+            if bus is not None:
+                bus.close()  # release the orphaned loop/connection before falling open
     from core.adapters.inproc_bus import InprocBus
 
     return InprocBus(cfg, store)

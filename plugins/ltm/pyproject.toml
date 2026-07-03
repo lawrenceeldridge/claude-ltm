@@ -37,6 +37,11 @@ embeddings = [
     "fastembed",
     "tree-sitter-language-pack>=0.7.0,<1.0.0",
 ]
+# Opt-in durable-queue backend (bus=nats). Absent → the MemoryBus falls open to the
+# stdlib inproc SQLite queue. Provisioned separately from the embeddings venv.
+nats = [
+    "nats-py>=2.9",
+]
 # Dev tooling only — never shipped, never a runtime dependency.
 dev = [
     "ruff>=0.15",
