@@ -66,6 +66,18 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(block, "")  # empty store → Null Object → no cost row
         self.assertEqual(self.store.usage_stats("p"), {})
 
+    def test_usage_summary_computes_net(self):
+        self.store.record_usage("p", "inject_prompt", bytes_in=400)  # 100 tokens cost
+        self.store.record_usage("p", "pull_symbol", bytes_saved=4000)  # 1000 tokens measured saving
+        self.store.log_recall("p", "q", returned=1, top_sim=0.9, confidence=0.9, verdict="ok")  # 1200 est
+        s = service.usage_summary(self.store, "p")
+        self.assertEqual(s["cost_tokens"], 100)
+        self.assertEqual(s["saved_measured_tokens"], 1000)
+        self.assertEqual(s["saved_estimated_tokens"], 1200)
+        self.assertEqual(s["net_tokens"], 1000 + 1200 - 100)
+        self.assertEqual(s["injections"], 1)
+        self.assertEqual(s["targeted_reads"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
