@@ -98,6 +98,20 @@ def _run_worker(payload_path: str) -> None:
             import time
 
             store.sweep(time.time(), cfg.ttl_days * 86400, cfg.ttl_keep_frequency, project["key"])
+        # Consolidation ("sleep") — run at session boundaries, not every turn (like sleep
+        # itself). replay promotes recalled short-term facts; refine prunes only when
+        # enabled (default no-op). Best-effort: never lose a capture over consolidation.
+        if checkpoint:
+            try:
+                from core.consolidation.refine import refine
+                from core.consolidation.replay import replay
+
+                replay(store, project)
+                refine(store, cfg, project)
+                if cfg.purge_horizon_days > 0:
+                    store.purge(cfg.purge_horizon_days * 86400)
+            except Exception:
+                pass
         store.close()
     finally:
         try:
