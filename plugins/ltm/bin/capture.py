@@ -36,7 +36,7 @@ def _run_worker(payload_path: str) -> None:
     from core.config import get_config
     from core.embedding import get_embedder
     from core.project import resolve_project
-    from core.service import capture_session_summary, capture_transcript_incremental
+    from core.service import capture_transcript_incremental, maybe_capture_summary
     from core.store import Store
 
     cfg = get_config()
@@ -48,11 +48,11 @@ def _run_worker(payload_path: str) -> None:
     embedder = get_embedder(cfg)
     store = Store(cfg.db_path)
     capture_transcript_incremental(store, embedder, cfg, project, session_id, transcript_path)
-    # PreCompact as well as SessionEnd: SessionEnd fires unreliably (a closed
-    # tab/window may never emit one), and PreCompact is the checkpoint where
-    # pre-compaction context is about to be discarded. Idempotent per session.
-    if payload.get("hook_event_name") in ("SessionEnd", "PreCompact"):
-        capture_session_summary(store, embedder, cfg, project, session_id, transcript_path)
+    # Session summary: forced at SessionEnd/PreCompact (reliable checkpoints where
+    # context is about to be lost), throttled-by-growth on Stop so it stays current
+    # each turn without a full-transcript LLM call every turn.
+    checkpoint = payload.get("hook_event_name") in ("SessionEnd", "PreCompact")
+    maybe_capture_summary(store, embedder, cfg, project, session_id, transcript_path, force=checkpoint)
     if cfg.ttl_days > 0:
         import time
 

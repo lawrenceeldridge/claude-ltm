@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""PreToolUse (Grep|Glob|Task) — nudge toward memory/index before a broad search.
+"""PreToolUse guard — steer toward memory/index before a broad search or a raw code read.
 
-Non-blocking: emits ``additionalContext`` so the tool still runs, but the model sees
-a reminder to consult claude-ltm first. Fires at most once per session (a per-session
-marker file) so it guides without spamming every search. Pure stdlib and does no plugin
-imports, so it adds negligible latency to a search and never needs the managed venv.
+Two behaviours, both fail-open:
+  * Grep / Glob / Task — a once-per-session reminder to consult recall / search_code /
+    search_docs before scanning.
+  * Read of a large code file (>=4KB, no offset/limit) — suggest search_code + get_symbol
+    instead of pulling the whole file.
+
+Strength is set by ``LTM_ENFORCE`` (default ``advisory``): ``off`` disables the guard;
+``advisory`` only injects reminders and never blocks; ``strict`` turns the large-code-Read
+case into a real ``deny`` — but only for files actually in the index, and never for
+offset/limit reads, so an agent can still do a targeted pre-edit read. Pure stdlib on the
+common path; the strict "is it indexed?" check lazily opens the store only under ``strict``.
 """
 
 from __future__ import annotations
@@ -13,35 +20,104 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
-_REMINDER = (
-    "claude-ltm memory + index are available and cheaper than a broad search. Before "
-    "Grep/Glob/Task, consult: `recall` (prior decisions/facts for this project), then "
-    "`search_code` / `search_docs` (the project's indexed symbols / doc sections — ranked "
-    "outlines, not file scans), then `get_symbol` / `get_doc_section` to pull the exact span. "
-    "Trust confident hits and skip the wide search; widen only if they're weak or empty. "
-    "(Reminder fires once per session.)"
+_CODE_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+_MIN_READ_BYTES = 4096
+
+_SEARCH_REMINDER = (
+    "claude-ltm memory + index are cheaper than a broad search (measured ~2/3 fewer tokens on "
+    "lookups). Before Grep/Glob/Task, consult `recall` (prior facts), then `search_code` / "
+    "`search_docs` (indexed symbols / doc sections), then `get_symbol` / `get_doc_section` for the "
+    "exact span. Trust confident hits; widen only if weak or empty. (Fires once per session.)"
+)
+_READ_ADVICE = (
+    "Reading a large code file whole — `search_code` then `get_symbol` returns just the symbol you "
+    "need (measured ~2/3 fewer tokens). Read is fine when you're about to edit it. (Fires once per session.)"
 )
 
 
+def _once(session: str, tag: str) -> bool:
+    """True the first time (session, tag) is seen — dedupes a per-session nudge."""
+    marker = Path(tempfile.gettempdir()) / f"ltm-{tag}-{session}.seen"
+    try:
+        os.close(os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
+
+
+def _emit_context(msg: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg}}))
+
+
+def _emit_deny(msg: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": msg
+        }
+    }))
+
+
+def _is_indexed(file_path: str) -> bool:
+    """Whether this file has chunks in the index — gate strict denies to indexed code only."""
+    try:
+        from _bootstrap import plugin_root
+
+        plugin_root()
+        from core.config import get_config
+        from core.project import resolve_project
+        from core.store import Store
+
+        cfg = get_config()
+        path = Path(file_path).resolve()  # match index_file's resolved source paths (symlink-safe)
+        project = resolve_project(str(path.parent), cfg.markers)
+        root = Path(project["path"]).resolve() if project.get("path") else path.parent
+        if not path.is_relative_to(root):
+            return False
+        store = Store(cfg.db_path)
+        try:
+            return store.source_state(project["key"], str(path.relative_to(root))) is not None
+        finally:
+            store.close()
+    except Exception:
+        return False
+
+
 def main() -> int:
+    enforce = os.environ.get("LTM_ENFORCE", "advisory").lower()
+    if enforce == "off":
+        return 0
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
-
+    tool = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input") or {}
     session = payload.get("session_id") or str(os.getppid())
-    marker = os.path.join(tempfile.gettempdir(), f"ltm-prefer-{session}.seen")
-    try:
-        # O_EXCL: the first search in a session creates the marker and gets the nudge;
-        # every later search finds it already there and stays silent.
-        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-    except FileExistsError:
-        return 0
-    except OSError:
-        pass  # can't write a marker — nudge anyway, better than never
 
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": _REMINDER}}))
+    if tool == "Read":
+        fp = tool_input.get("file_path", "")
+        if Path(fp).suffix.lower() in _CODE_EXT and not tool_input.get("offset") and not tool_input.get("limit"):
+            try:
+                size = os.path.getsize(fp)
+            except OSError:
+                size = 0
+            if size >= _MIN_READ_BYTES:
+                if enforce == "strict" and _is_indexed(fp):
+                    _emit_deny(
+                        "This file is indexed by claude-ltm. Use `search_code` + `get_symbol` to read the "
+                        "specific symbol (far fewer tokens), or Read with offset/limit for a pre-edit peek. "
+                        "Set LTM_ENFORCE=advisory to disable this gate."
+                    )
+                elif _once(session, "readguard"):
+                    _emit_context(_READ_ADVICE)
+        return 0
+
+    if _once(session, "prefer"):  # Grep | Glob | Task
+        _emit_context(_SEARCH_REMINDER)
     return 0
 
 

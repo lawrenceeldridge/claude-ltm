@@ -24,7 +24,7 @@ from core.code_symbols import extract_code_symbols, extract_symbols  # noqa: E40
 from core import treesitter_symbols  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.embedding import HashEmbedding  # noqa: E402
-from core.indexer import index_project  # noqa: E402
+from core.indexer import index_file, index_project  # noqa: E402
 from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
 from core.store import Store, _SCHEMA_VERSION  # noqa: E402
 
@@ -218,6 +218,18 @@ class IndexerAndRecallTests(unittest.TestCase):
         outline = get_outline(self.store, self.project)
         self.assertEqual(outline["count"], 3)
         self.assertTrue(all("body" not in s for s in outline["sections"]))
+
+    def test_index_file_lifecycle(self):
+        py = Path(self.repo.name) / "svc.py"
+        py.write_text("def handler(x):\n    return x\n", encoding="utf-8")
+        self.assertEqual(index_file(self.store, self.embedder, self.cfg, self.project, str(py))["status"], "indexed")
+        self.assertEqual(index_file(self.store, self.embedder, self.cfg, self.project, str(py))["status"], "skipped")
+        py.write_text("def handler(x):\n    return x\ndef helper():\n    return 1\n", encoding="utf-8")
+        index_file(self.store, self.embedder, self.cfg, self.project, str(py))
+        self.assertEqual({s["anchor"] for s in self.store.chunk_outline(self.project["key"], "svc.py")}, {"handler", "helper"})
+        py.unlink()
+        self.assertEqual(index_file(self.store, self.embedder, self.cfg, self.project, str(py))["status"], "removed")
+        self.assertEqual(self.store.chunk_outline(self.project["key"], "svc.py"), [])
 
 
 class CodeSymbolTests(unittest.TestCase):

@@ -109,8 +109,11 @@ def index_file(
     Edit/Write. If the file was deleted or is no longer index-eligible, its chunks are
     dropped so the index never serves a symbol/section that has gone.
     """
-    path = Path(file_path)
-    project_root = Path(project["path"]) if project.get("path") else path.parent
+    # Resolve both sides: an edited path from the tool call and the project root can
+    # differ only by a symlink prefix (e.g. macOS /var → /private/var), which would
+    # otherwise defeat relative_to and mis-store the source path.
+    path = Path(file_path).resolve()
+    project_root = Path(project["path"]).resolve() if project.get("path") else path.parent
     try:
         source_path = str(path.relative_to(project_root)) if path.is_relative_to(project_root) else None
     except (OSError, ValueError):

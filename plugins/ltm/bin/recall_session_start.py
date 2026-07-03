@@ -19,10 +19,11 @@ reexec_if_pinned()
 ROOT = plugin_root()
 
 MEMORY_FIRST_POLICY = (
-    "[ltm] Memory-first: before a broad Grep/Glob/Task code search, call the `recall` tool "
-    "(ltm-memory MCP server) with your search intent. If it returns verdict=ok, trust those "
-    "facts and skip the wider search; if low_confidence or no_memory, then widen. Recall is a "
-    "cheap store lookup — far cheaper than scanning files."
+    "[ltm] Memory/index-first — before a broad Grep/Glob/Read/Task search, consult claude-ltm "
+    "(measured ~2/3 fewer tokens than grep+read on lookups): `recall` for prior decisions/facts; "
+    "`search_code` / `search_docs` for this project's indexed symbols / doc sections (ranked "
+    "outlines, not file scans); then `get_symbol` / `get_doc_section` for the exact span. Trust "
+    "confident hits and skip the wider search; widen only when recall/search is weak or empty."
 )
 
 
@@ -36,7 +37,7 @@ def main() -> int:
     try:
         from core.config import get_config
         from core.project import resolve_project
-        from core.service import recall_core_block
+        from core.service import orientation_block, recall_core_block
         from core.store import Store
 
         cfg = get_config()
@@ -66,9 +67,12 @@ def main() -> int:
                 )
         project = resolve_project(cwd, cfg.markers)
         store = Store(cfg.db_path)
+        orientation = orientation_block(store, project)
         block = recall_core_block(store, cfg, project) if cfg.core_size > 0 else ""
         store.close()
         parts = [MEMORY_FIRST_POLICY]
+        if orientation:
+            parts.append(orientation)
         if block:
             parts.append(block)
         print(json.dumps({"additionalContext": "\n\n".join(parts)}))

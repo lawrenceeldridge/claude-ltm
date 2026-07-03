@@ -447,6 +447,14 @@ class Store:
             (project_key, limit),
         ).fetchall()
 
+    def latest_summary(self, project_key: str) -> sqlite3.Row | None:
+        """The newest session summary for a project — the SessionStart orientation snapshot."""
+        return self.db.execute(
+            "SELECT * FROM facts WHERE project_key = ? AND kind = 'session_summary' AND status = 'active' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (project_key,),
+        ).fetchone()
+
     def projects(self) -> list[sqlite3.Row]:
         return self.db.execute(
             "SELECT project_key, project_label, project_path, "

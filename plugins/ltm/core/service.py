@@ -9,6 +9,7 @@ Write side (capture) is heavy and runs off the interactive path. Read side
 from __future__ import annotations
 
 import json
+import os
 import time
 
 from core.config import Config
@@ -201,6 +202,40 @@ def capture_session_summary(
     return add_records(store, embedder, cfg, project, session_id, [summary], kind="session_summary")
 
 
+_SUMMARY_MIN_NEW_BYTES = 8000
+
+
+def maybe_capture_summary(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    transcript_path: str,
+    *,
+    force: bool = False,
+    min_new_bytes: int = _SUMMARY_MIN_NEW_BYTES,
+) -> int:
+    """Refresh the session summary, throttled by how much the transcript has grown.
+
+    claude-mem re-summarises on every Stop — a full-transcript LLM call per turn.
+    Throttling on transcript growth (a summary cursor per session) keeps the summary
+    current on Stop at a fraction of that cost, while ``force=True`` (SessionEnd /
+    PreCompact checkpoints) always writes a final one. Both paths advance the cursor,
+    so a checkpoint summary suppresses an immediate throttled re-run on the next Stop.
+    """
+    key = f"summary:{project['key']}:{session_id or transcript_path}"
+    try:
+        size = os.path.getsize(transcript_path)
+    except OSError:
+        return 0
+    if not force and size - store.get_capture_cursor(key) < min_new_bytes:
+        return 0
+    inserted = capture_session_summary(store, embedder, cfg, project, session_id, transcript_path)
+    store.set_capture_cursor(key, size)
+    return inserted
+
+
 def capture_prompts(
     store: Store,
     embedder: EmbeddingGateway,
@@ -288,6 +323,22 @@ def recall_core_block(
     rows = store.recent(project["key"], cfg.core_size)
     hits = [(1.0, row) for row in rows]
     return render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+
+
+def orientation_block(store: Store, project: Project, max_chars: int = 900) -> str:
+    """The latest session summary as a 'where you left off' orientation snapshot.
+
+    Injected at SessionStart (which also fires after a /compact), this re-establishes
+    task orientation across a session or compaction boundary — claude-ltm's equivalent
+    of jcodemunch's PreCompact snapshot, delivered on the reliable SessionStart event.
+    """
+    row = store.latest_summary(project["key"])
+    if row is None:
+        return ""
+    title = row["title"] or "Previous session"
+    body = (row["narrative"] or row["text"] or "").strip()
+    block = f"Where {project['label']} left off — {title}:\n{body}".strip()
+    return block[:max_chars]
 
 
 _GUIDANCE = {
