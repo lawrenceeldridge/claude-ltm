@@ -322,10 +322,13 @@ monorepos and subdirectory launches.
 
 ## Status
 
-Working end to end (137 tests, 5 skipped). Defaults are local-first and
+Working end to end (190 tests, 10 skipped). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
-zero-token local). See [DESIGN.md](DESIGN.md) for the full architecture, POEAA
-pattern choices, caching analysis, memory-lifecycle model, benchmark, and risk
-register.
+zero-token local). The memory lifecycle adds explicit STM/LTM tiers with
+rehearsal-based promotion and a consolidation ("sleep") pass; capture and recovery
+run through a durable work queue — a zero-dependency `inproc` SQLite queue by default,
+or opt-in NATS JetStream (auto-provisioned, fail-open to `inproc`). See
+[DESIGN.md](DESIGN.md) for the full architecture, POEAA pattern choices, caching
+analysis, memory-lifecycle model, benchmark, and risk register.
