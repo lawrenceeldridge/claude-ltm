@@ -69,6 +69,62 @@ def _embed_text(title: str, heading_path: str, summary: str, body: str) -> str:
     return f"{heading_path}\n{summary}\n{body[:_EMBED_BODY_CHARS]}".strip() or title
 
 
+def _index_path(
+    store: Store, embedder: EmbeddingGateway, distiller, project: Project,
+    project_root: Path, root: Path, path: Path, now: float,
+) -> tuple[str, int, str | None]:
+    """Index one file with the mtime→hash short-circuit. Returns (status, n_chunks, source_path)."""
+    try:
+        base = project_root if path.is_relative_to(project_root) else root
+        source_path = str(path.relative_to(base))
+        mtime_ns = path.stat().st_mtime_ns
+    except (OSError, ValueError):
+        return ("error", 0, None)
+
+    prior = store.source_state(project["key"], source_path)
+    if prior is not None and prior[1] == mtime_ns:
+        return ("skipped", 0, source_path)  # mtime unchanged — no read
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ("error", 0, source_path)
+    if len(data) > _MAX_FILE_BYTES:
+        return ("skipped", 0, source_path)
+    file_hash = _file_hash(data)
+    if prior is not None and prior[0] == file_hash:
+        return ("skipped", 0, source_path)  # content identical despite mtime touch
+
+    text = data.decode("utf-8", "ignore")
+    chunks = _build_chunks(store, embedder, distiller, project, source_path, text)
+    store.replace_source_chunks(project["key"], source_path, chunks, file_hash, mtime_ns, now)
+    return ("indexed", len(chunks), source_path)
+
+
+def index_file(
+    store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project, file_path: str | Path
+) -> dict:
+    """Re-index a single file (for the PostToolUse per-edit refresh).
+
+    A no-LLM, hash-short-circuited single-file update — cheap enough to run on every
+    Edit/Write. If the file was deleted or is no longer index-eligible, its chunks are
+    dropped so the index never serves a symbol/section that has gone.
+    """
+    path = Path(file_path)
+    project_root = Path(project["path"]) if project.get("path") else path.parent
+    try:
+        source_path = str(path.relative_to(project_root)) if path.is_relative_to(project_root) else None
+    except (OSError, ValueError):
+        source_path = None
+
+    if path.suffix.lower() not in _INDEX_EXTENSIONS or not path.exists():
+        if source_path is not None:
+            store.delete_source(project["key"], source_path)
+        return {"status": "removed" if source_path else "ignored", "chunks": 0}
+
+    status, n, _sp = _index_path(store, embedder, None, project, project_root, path.parent, path, time.time())
+    return {"status": status, "chunks": n}
+
+
 def index_project(
     store: Store,
     embedder: EmbeddingGateway,
@@ -101,36 +157,16 @@ def index_project(
         return {**stats, "skipped_too_large": len(discovered), "max_files": max_files}
 
     for path in discovered:
-        try:
-            base = project_root if path.is_relative_to(project_root) else root
-            source_path = str(path.relative_to(base))
-            mtime_ns = path.stat().st_mtime_ns
-        except (OSError, ValueError):
-            continue
-        seen.add(source_path)
-
-        prior = store.source_state(project["key"], source_path)
-        if prior is not None and prior[1] == mtime_ns:
+        status, n_chunks, source_path = _index_path(
+            store, embedder, distiller, project, project_root, root, path, now
+        )
+        if source_path is not None:
+            seen.add(source_path)
+        if status == "indexed":
+            stats["files"] += 1
+            stats["chunks"] += n_chunks
+        elif status == "skipped":
             stats["skipped"] += 1
-            continue  # mtime unchanged — fast path, no read
-
-        try:
-            data = path.read_bytes()
-        except OSError:
-            continue
-        if len(data) > _MAX_FILE_BYTES:
-            stats["skipped"] += 1
-            continue
-        file_hash = _file_hash(data)
-        if prior is not None and prior[0] == file_hash:
-            stats["skipped"] += 1
-            continue  # content identical despite mtime touch — nothing to re-embed
-
-        text = data.decode("utf-8", "ignore")
-        chunks = _build_chunks(store, embedder, distiller, project, source_path, text)
-        store.replace_source_chunks(project["key"], source_path, chunks, file_hash, mtime_ns, now)
-        stats["files"] += 1
-        stats["chunks"] += len(chunks)
 
     for gone in store.indexed_sources(project["key"]) - seen:
         store.delete_source(project["key"], gone)

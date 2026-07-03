@@ -267,8 +267,14 @@ class Store:
     def __init__(self, path: Path | str) -> None:
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path)
+        self.db = sqlite3.connect(self.path, timeout=5.0)
         self.db.row_factory = sqlite3.Row
+        # WAL lets concurrent hook processes (capture, per-edit reindex, recall, the
+        # viewer) read while one writes; busy_timeout waits out a brief write lock
+        # instead of raising; NORMAL sync is durable enough under WAL and much faster.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=5000")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(_SCHEMA)
         self._migrate()
 
