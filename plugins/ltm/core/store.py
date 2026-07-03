@@ -440,6 +440,43 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    def supersede_count(self, fact_id: str) -> int:
+        """How many facts this one superseded — the retention 'surprise' signal (§3A)."""
+        return self.db.execute("SELECT COUNT(*) FROM facts WHERE superseded_by = ?", (fact_id,)).fetchone()[0]
+
+    def set_status(self, fact_ids: list[str], status: str) -> int:
+        """Archive a set of facts under ``status`` (reversible; recall scans 'active' only)."""
+        if not fact_ids:
+            return 0
+        cur = self.db.execute(
+            f"UPDATE facts SET status = ? WHERE id IN ({_placeholders(fact_ids)})",
+            (status, *fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def purge(self, horizon_seconds: float, now: float | None = None) -> int:
+        """Two-stage lifecycle backstop — hard-delete long-archived facts, then VACUUM.
+
+        The ONLY true delete: rows already archived (superseded/displaced/pruned/expired)
+        and untouched for longer than ``horizon_seconds``. Opt-in (disabled at 0). The
+        FTS index stays in sync via the delete trigger.
+        """
+        cutoff = _now(now) - horizon_seconds
+        cur = self.db.execute(
+            "DELETE FROM facts WHERE status IN ('superseded', 'displaced', 'pruned', 'expired') "
+            "AND COALESCE(last_seen, created_at) < ?",
+            (cutoff,),
+        )
+        self.db.commit()
+        deleted = cur.rowcount
+        if deleted:
+            try:
+                self.db.execute("VACUUM")
+            except sqlite3.OperationalError:
+                pass  # a concurrent reader can block VACUUM; space reclaim is best-effort
+        return deleted
+
     def supersede(self, fact_ids: list[str], by_id: str) -> int:
         """Retroactive interference — archive facts replaced by a newer one."""
         if not fact_ids:

@@ -83,6 +83,9 @@ class Config:
     bus_max_deliver: int
     bus_backoff: tuple[float, ...]
     lease_ttl: float
+    retention_keep_max: int
+    prune_threshold: float
+    purge_horizon_days: float
     distiller: str
     distiller_cmd: str
     distiller_model: str
@@ -130,6 +133,11 @@ def get_config() -> Config:
         bus_max_deliver=int(_num(_opt("bus_max_deliver", "5"), 5)),
         bus_backoff=tuple(float(x) for x in _opt("bus_backoff", "5,30,120,600").split(",") if x.strip()),
         lease_ttl=_num(_opt("lease_ttl", "300"), 300),
+        # Consolidation (sleep pass). All default-off: pruning is retrieval-affecting
+        # and stays disabled until the retention weights are `ltm eval`-tuned.
+        retention_keep_max=int(_num(_opt("retention_keep_max", "0"), 0)),
+        prune_threshold=_num(_opt("prune_threshold", "0"), 0),
+        purge_horizon_days=_num(_opt("purge_horizon_days", "0"), 0),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),
         distiller_model=_opt("distiller_model", ""),
