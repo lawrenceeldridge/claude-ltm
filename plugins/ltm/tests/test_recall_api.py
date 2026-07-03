@@ -19,12 +19,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
+from core import service  # noqa: E402
 from core.confidence import compute_confidence  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.embedding import HashEmbedding  # noqa: E402
 from core.lexical import has_overlap, tokenize  # noqa: E402
 from core.store import Store  # noqa: E402
-from core import service  # noqa: E402
 
 
 class ConfidenceTests(unittest.TestCase):
@@ -92,9 +92,16 @@ class RecallStructuredTests(unittest.TestCase):
         from core.distill import DistilledFact
 
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
-            [DistilledFact(text="uses ruff for linting", title="Linting",
-                           narrative="Adopted ruff.", files=["pyproject.toml"])],
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
+            [
+                DistilledFact(
+                    text="uses ruff for linting", title="Linting", narrative="Adopted ruff.", files=["pyproject.toml"]
+                )
+            ],
         )
         row = self.store.rows_for_project(self.project["key"])[0]
         self.assertEqual(row["title"], "Linting")
@@ -105,7 +112,11 @@ class RecallStructuredTests(unittest.TestCase):
         from core.distill import DistilledFact
 
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             [DistilledFact(text="the build pipeline", title="Zephyr deploy")],
         )
         self.assertEqual(len(self.store.fts_search(self.project["key"], "zephyr")), 1)
@@ -114,25 +125,41 @@ class RecallStructuredTests(unittest.TestCase):
         from core.distill import Observation, observations_to_facts
 
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
-            observations_to_facts([Observation(
-                type="feature", title="X", subtitle="uses zephyr indexing",
-                facts=["did a thing"], narrative="", files=["core/widget.py"])]),
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
+            observations_to_facts(
+                [
+                    Observation(
+                        type="feature",
+                        title="X",
+                        subtitle="uses zephyr indexing",
+                        facts=["did a thing"],
+                        narrative="",
+                        files=["core/widget.py"],
+                    )
+                ]
+            ),
         )
-        self.assertEqual(len(self.store.fts_search(self.project["key"], "zephyr")), 1)   # subtitle
-        self.assertEqual(len(self.store.fts_search(self.project["key"], "widget")), 1)   # file path
+        self.assertEqual(len(self.store.fts_search(self.project["key"], "zephyr")), 1)  # subtitle
+        self.assertEqual(len(self.store.fts_search(self.project["key"], "widget")), 1)  # file path
 
     def test_fts_backfill_on_migration(self):
         from core.distill import DistilledFact
 
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             [DistilledFact(text="the localhost viewer streams updates")],
         )
         # Simulate a database created before the FTS index existed.
         self.store.db.executescript(
-            "DROP TABLE facts_fts;"
-            "DROP TRIGGER facts_ai; DROP TRIGGER facts_ad; DROP TRIGGER facts_au;"
+            "DROP TABLE facts_fts;DROP TRIGGER facts_ai; DROP TRIGGER facts_ad; DROP TRIGGER facts_au;"
         )
         self.store.db.execute("PRAGMA user_version = 0")
         self.store.db.commit()
@@ -146,7 +173,11 @@ class RecallStructuredTests(unittest.TestCase):
         from core.store import _SCHEMA_VERSION
 
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             [DistilledFact(text="uses github actions for ci")],
         )
         # Simulate a legacy install that only stamped the old FTS flag (=1).
@@ -164,8 +195,13 @@ class RecallStructuredTests(unittest.TestCase):
         for note in ("Summary one", "Summary two"):
             self.store.clear_session_kind(self.project["key"], "s1", "session_summary")
             service.add_records(
-                self.store, self.embedder, self.cfg, self.project, "s1",
-                [DistilledFact(text=note)], kind="session_summary",
+                self.store,
+                self.embedder,
+                self.cfg,
+                self.project,
+                "s1",
+                [DistilledFact(text=note)],
+                kind="session_summary",
             )
         rows = [r for r in self.store.rows_for_project(self.project["key"]) if r["kind"] == "session_summary"]
         self.assertEqual([r["text"] for r in rows], ["Summary two"])
@@ -186,11 +222,19 @@ class RecallStructuredTests(unittest.TestCase):
         from core.distill import Observation, observations_to_facts
 
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             observations_to_facts([Observation(type="feature", title="A", facts=["a1", "a2"])]),
         )
         service.add_records(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             observations_to_facts([Observation(type="bugfix", title="B", facts=["b1"])]),
         )
         groups = self.store.list_observations(self.project["key"])
@@ -211,20 +255,26 @@ class RecallStructuredTests(unittest.TestCase):
 
     def test_dim_divergence_returns_embedding_mismatch(self):
         service.add_facts(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             ["The deployment pipeline runs on github actions."],
         )
         other_space = HashEmbedding(dim=self.cfg.dim // 2)
-        result = service.recall_structured(
-            self.store, other_space, self.cfg, self.project, "deployment pipeline"
-        )
+        result = service.recall_structured(self.store, other_space, self.cfg, self.project, "deployment pipeline")
         self.assertEqual(result["verdict"], "embedding_mismatch")
         self.assertEqual(result["facts"], [])
         self.assertIn("configuration problem", result["guidance"])
 
     def test_relevant_recall_is_ok(self):
         service.add_facts(
-            self.store, self.embedder, self.cfg, self.project, "s1",
+            self.store,
+            self.embedder,
+            self.cfg,
+            self.project,
+            "s1",
             ["The deployment pipeline runs on github actions with a manual approval gate."],
         )
         result = service.recall_structured(
@@ -240,9 +290,7 @@ class RecallStructuredTests(unittest.TestCase):
         from dataclasses import replace
 
         cfg = replace(self.cfg, recall_max_chars=120)
-        result = service.recall_structured(
-            self.store, self.embedder, cfg, self.project, "compact memory storage", k=20
-        )
+        result = service.recall_structured(self.store, self.embedder, cfg, self.project, "compact memory storage", k=20)
         used = sum(len(f["text"]) for f in result["facts"])
         self.assertLessEqual(used - len(result["facts"][0]["text"]), 120)
         self.assertEqual(result["dropped"], result["matched"] - result["returned"])
@@ -274,9 +322,15 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(
             names,
             {
-                "recall", "list_projects", "index_docs",
-                "search_docs", "get_doc_section", "doc_outline",
-                "search_code", "get_symbol", "code_outline",
+                "recall",
+                "list_projects",
+                "index_docs",
+                "search_docs",
+                "get_doc_section",
+                "doc_outline",
+                "search_code",
+                "get_symbol",
+                "code_outline",
             },
         )
 
@@ -342,11 +396,21 @@ class DistillStructuredTests(unittest.TestCase):
 
         rows = [
             json.dumps({"type": "user", "message": {"role": "user", "content": "Fix the timezone bug please."}}),
-            json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
-                {"type": "text", "text": "Done."},
-                {"type": "tool_use", "name": "Edit", "input": {"file_path": "serve.py"}}]}}),
-            json.dumps({"type": "user", "message": {"role": "user", "content": [
-                {"type": "tool_result", "content": "ok"}]}}),  # tool result -> not a prompt
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Done."},
+                            {"type": "tool_use", "name": "Edit", "input": {"file_path": "serve.py"}},
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}}
+            ),  # tool result -> not a prompt
         ]
         fd, path = tempfile.mkstemp(suffix=".jsonl")
         with os.fdopen(fd, "w") as fh:
@@ -361,8 +425,10 @@ class DistillStructuredTests(unittest.TestCase):
     def test_parse_observations_and_expand_to_grouped_facts(self):
         from core.distill import observations_to_facts, parse_observations
 
-        raw = ('{"observations":[{"type":"feature","title":"Add X","subtitle":"adds the X capability",'
-               '"facts":["did a","did b"],"narrative":"why","files":["a.py"],"supersedes":[]}]}')
+        raw = (
+            '{"observations":[{"type":"feature","title":"Add X","subtitle":"adds the X capability",'
+            '"facts":["did a","did b"],"narrative":"why","files":["a.py"],"supersedes":[]}]}'
+        )
         obs = parse_observations(raw)
         self.assertEqual(len(obs), 1)
         self.assertEqual(obs[0].type, "feature")

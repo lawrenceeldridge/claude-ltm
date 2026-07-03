@@ -124,7 +124,9 @@ def main() -> int:
     try:
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "--worker"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except Exception as exc:  # fail-open backstop

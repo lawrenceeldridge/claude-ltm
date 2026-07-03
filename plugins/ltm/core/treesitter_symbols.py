@@ -180,9 +180,14 @@ def _emit_arrows(decl, src, spec, out, prefix, level) -> None:
         sig = f"const {name}{_text(params, src) if params else '()'}"
         out.append(
             Symbol(
-                name=name, qualname=qual, kind="function",
-                signature=" ".join(sig.split())[:_SIG_MAX], docstring="", level=level,
-                byte_start=decl.start_byte, byte_end=decl.end_byte,
+                name=name,
+                qualname=qual,
+                kind="function",
+                signature=" ".join(sig.split())[:_SIG_MAX],
+                docstring="",
+                level=level,
+                byte_start=decl.start_byte,
+                byte_end=decl.end_byte,
                 body=_text(decl, src).rstrip(),
             )
         )

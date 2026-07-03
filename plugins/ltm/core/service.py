@@ -12,8 +12,8 @@ import json
 import os
 import time
 
-from core.config import Config
 from core.confidence import compute_confidence
+from core.config import Config
 from core.distill import DistilledFact, get_distiller
 from core.embedding import EmbeddingGateway
 from core.lexical import has_overlap
@@ -100,9 +100,7 @@ def add_facts(
     facts: list[str],
     kind: str = "fact",
 ) -> int:
-    return add_records(
-        store, embedder, cfg, project, session_id, [DistilledFact(f) for f in facts], kind
-    )
+    return add_records(store, embedder, cfg, project, session_id, [DistilledFact(f) for f in facts], kind)
 
 
 # Distillers that call an LLM (and so can transiently fail to the heuristic). A

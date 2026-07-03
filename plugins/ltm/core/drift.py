@@ -68,11 +68,19 @@ def check(embedder: EmbeddingGateway, data_dir: Path | str, model_id: str) -> di
 
     baseline = json.loads(path.read_text(encoding="utf-8"))
     if baseline.get("dim") != embedder.dim:
-        return {"status": "dim_changed", "pinned_dim": baseline.get("dim"), "current_dim": embedder.dim,
-                "hint": "Embedding dimension changed — re-embed the store."}
+        return {
+            "status": "dim_changed",
+            "pinned_dim": baseline.get("dim"),
+            "current_dim": embedder.dim,
+            "hint": "Embedding dimension changed — re-embed the store.",
+        }
     if baseline.get("model") != model_id:
-        return {"status": "model_changed", "pinned_model": baseline.get("model"), "current_model": model_id,
-                "hint": "Embedding model changed — old vectors are not comparable; re-embed the store."}
+        return {
+            "status": "model_changed",
+            "pinned_model": baseline.get("model"),
+            "current_model": model_id,
+            "hint": "Embedding model changed — old vectors are not comparable; re-embed the store.",
+        }
 
     current = embedder.embed(CANARY_PHRASES)
     sims = [cosine(a, b) for a, b in zip(baseline["vectors"], current)]

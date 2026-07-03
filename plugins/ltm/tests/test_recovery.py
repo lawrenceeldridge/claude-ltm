@@ -20,7 +20,7 @@ from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.distill import DistilledFact  # noqa: E402
 from core.embedding import HashEmbedding  # noqa: E402
-from core.store import Store, _SCHEMA_VERSION  # noqa: E402
+from core.store import _SCHEMA_VERSION, Store  # noqa: E402
 
 
 class _StubDistiller:

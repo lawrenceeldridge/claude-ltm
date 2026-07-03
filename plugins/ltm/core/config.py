@@ -97,9 +97,7 @@ class Config:
 def get_config() -> Config:
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-    markers = tuple(
-        m.strip() for m in _opt("markers", _DEFAULT_MARKERS).split(",") if m.strip()
-    )
+    markers = tuple(m.strip() for m in _opt("markers", _DEFAULT_MARKERS).split(",") if m.strip())
     return Config(
         embedding=_opt("embedding", "hash"),
         embedding_model=_opt("embedding_model", ""),

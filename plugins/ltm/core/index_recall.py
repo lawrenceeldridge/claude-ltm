@@ -199,9 +199,7 @@ def _dedupe_anchors(units: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return out
 
 
-def get_outline(
-    store: Store, project: Project, source_path: str | None = None, kind: str | None = None
-) -> dict:
+def get_outline(store: Store, project: Project, source_path: str | None = None, kind: str | None = None) -> dict:
     """Repo/file skeleton — anchors, titles, breadcrumbs, summaries; zero bodies."""
     rows = store.chunk_outline(project["key"], source_path, kind=kind)
     return {

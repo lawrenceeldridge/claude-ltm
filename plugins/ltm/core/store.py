@@ -29,6 +29,7 @@ def _fts_match_expr(query: str) -> str:
     """
     return " OR ".join(f'"{t}"' for t in _FTS_TOKEN.findall(query.lower()))
 
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
   id            TEXT PRIMARY KEY,
@@ -187,9 +188,7 @@ def _v2_structured(db: sqlite3.Connection) -> None:
 
 
 def _v3_fts(db: sqlite3.Connection) -> None:
-    existed = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'"
-    ).fetchone()
+    existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'").fetchone()
     db.executescript(_FTS_SCHEMA)
     if not existed:
         # External-content FTS5 is populated with the 'rebuild' command (a manual
@@ -243,9 +242,7 @@ def _v8_redistill(db: sqlite3.Connection) -> None:
 def _v7_index(db: sqlite3.Connection) -> None:
     # Code/docs index tables + their FTS. Additive and idempotent; the facts store is
     # untouched. 'rebuild' backfills the FTS from any chunks written before it existed.
-    existed = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'"
-    ).fetchone()
+    existed = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts'").fetchone()
     db.executescript(_CHUNK_SCHEMA)
     db.executescript(_CHUNK_FTS_SCHEMA)
     if not existed:
@@ -257,8 +254,14 @@ def _v7_index(db: sqlite3.Connection) -> None:
 # EXISTS, rebuild only on first creation), so a database at any prior version —
 # including the legacy FTS flag of 1 — converges by running the rest as no-ops.
 _MIGRATIONS = [
-    _v1_lifecycle, _v2_structured, _v3_fts, _v4_observations, _v5_subtitle, _v6_fts_widen,
-    _v7_index, _v8_redistill,
+    _v1_lifecycle,
+    _v2_structured,
+    _v3_fts,
+    _v4_observations,
+    _v5_subtitle,
+    _v6_fts_widen,
+    _v7_index,
+    _v8_redistill,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -381,9 +384,7 @@ class Store:
     def get(self, fact_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,)).fetchone()
 
-    def rows_for_project(
-        self, project_key: str, limit: int | None = None, offset: int = 0
-    ) -> list[sqlite3.Row]:
+    def rows_for_project(self, project_key: str, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
         """Facts for a project, newest first. Paginate with limit/offset; limit=None returns all."""
         sql = "SELECT * FROM facts WHERE project_key = ? ORDER BY created_at DESC, rowid DESC"
         params: list = [project_key]
@@ -397,9 +398,7 @@ class Store:
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
         ).fetchall()
 
-    def list_observations(
-        self, project_key: str, limit: int | None = None, offset: int = 0
-    ) -> list[list[sqlite3.Row]]:
+    def list_observations(self, project_key: str, limit: int | None = None, offset: int = 0) -> list[list[sqlite3.Row]]:
         """Facts grouped into observation cards, newest group first, paginated by group.
 
         A group is the facts sharing an observation_id (falling back to the fact's own
@@ -434,8 +433,7 @@ class Store:
         by the dim gate and the result would otherwise masquerade as 'no memory'.
         """
         rows = self.db.execute(
-            "SELECT DISTINCT dim FROM facts "
-            "WHERE project_key = ? AND status = 'active' AND dim IS NOT NULL",
+            "SELECT DISTINCT dim FROM facts WHERE project_key = ? AND status = 'active' AND dim IS NOT NULL",
             (project_key,),
         ).fetchall()
         return {row[0] for row in rows}
@@ -507,10 +505,7 @@ class Store:
         marked 'expired', not deleted, so the viewer can still show them.
         """
         cutoff = now - ttl_seconds
-        sql = (
-            "UPDATE facts SET status = 'expired' "
-            "WHERE status = 'active' AND last_seen < ? AND frequency < ?"
-        )
+        sql = "UPDATE facts SET status = 'expired' WHERE status = 'active' AND last_seen < ? AND frequency < ?"
         params: list = [cutoff, keep_frequency]
         if project_key:
             sql += " AND project_key = ?"
@@ -562,9 +557,7 @@ class Store:
 
     def get_capture_cursor(self, cursor_key: str) -> int:
         """Byte offset already distilled for this session, so incremental capture reads only new turns."""
-        row = self.db.execute(
-            "SELECT offset FROM capture_cursors WHERE cursor_key = ?", (cursor_key,)
-        ).fetchone()
+        row = self.db.execute("SELECT offset FROM capture_cursors WHERE cursor_key = ?", (cursor_key,)).fetchone()
         return row["offset"] if row else 0
 
     def set_capture_cursor(self, cursor_key: str, offset: int, now: float | None = None) -> None:
@@ -591,13 +584,16 @@ class Store:
         return (row["file_hash"], row["mtime_ns"]) if row else None
 
     def indexed_sources(self, project_key: str) -> set[str]:
-        rows = self.db.execute(
-            "SELECT source_path FROM chunk_sources WHERE project_key = ?", (project_key,)
-        ).fetchall()
+        rows = self.db.execute("SELECT source_path FROM chunk_sources WHERE project_key = ?", (project_key,)).fetchall()
         return {row[0] for row in rows}
 
     def replace_source_chunks(
-        self, project_key: str, source_path: str, chunks: list[dict], file_hash: str, mtime_ns: int,
+        self,
+        project_key: str,
+        source_path: str,
+        chunks: list[dict],
+        file_hash: str,
+        mtime_ns: int,
         now: float | None = None,
     ) -> int:
         """Atomically swap a file's chunks for a freshly-parsed set and stamp its source state.
@@ -608,9 +604,7 @@ class Store:
         """
         stamp = now if now is not None else time.time()
         with self.db:
-            self.db.execute(
-                "DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path)
-            )
+            self.db.execute("DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path))
             self.db.executemany(
                 "INSERT OR REPLACE INTO chunks "
                 "(id, project_key, source_path, kind, anchor, title, heading_path, level, "
@@ -618,10 +612,23 @@ class Store:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
-                        c["id"], project_key, source_path, c.get("kind", "doc_section"), c["anchor"],
-                        c["title"], c["heading_path"], c["level"], c.get("summary") or None, c["body"],
-                        c["byte_start"], c["byte_end"], c["content_hash"], c["dim"], c["scale"],
-                        c["vec_int8"], stamp,
+                        c["id"],
+                        project_key,
+                        source_path,
+                        c.get("kind", "doc_section"),
+                        c["anchor"],
+                        c["title"],
+                        c["heading_path"],
+                        c["level"],
+                        c.get("summary") or None,
+                        c["body"],
+                        c["byte_start"],
+                        c["byte_end"],
+                        c["content_hash"],
+                        c["dim"],
+                        c["scale"],
+                        c["vec_int8"],
+                        stamp,
                     )
                     for c in chunks
                 ],
@@ -637,9 +644,7 @@ class Store:
     def delete_source(self, project_key: str, source_path: str) -> None:
         """Drop a vanished file's chunks and source row (called for files gone since last index)."""
         with self.db:
-            self.db.execute(
-                "DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path)
-            )
+            self.db.execute("DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path))
             self.db.execute(
                 "DELETE FROM chunk_sources WHERE project_key = ? AND source_path = ?",
                 (project_key, source_path),
@@ -679,9 +684,7 @@ class Store:
             params.append(kind)
         return self.db.execute(sql, params).fetchall()
 
-    def chunk_fts_search(
-        self, project_key: str, query: str, limit: int = 50, kind: str | None = None
-    ) -> list[str]:
+    def chunk_fts_search(self, project_key: str, query: str, limit: int = 50, kind: str | None = None) -> list[str]:
         """Chunk ids matching an FTS5 keyword query, best-ranked first (weighted columns)."""
         match = _fts_match_expr(query)
         if not match:
@@ -705,9 +708,7 @@ class Store:
         ).fetchall()
 
     def chunk_count(self, project_key: str) -> int:
-        return self.db.execute(
-            "SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)
-        ).fetchone()[0]
+        return self.db.execute("SELECT COUNT(*) FROM chunks WHERE project_key = ?", (project_key,)).fetchone()[0]
 
     def prune_chunks(self, project_key: str) -> int:
         with self.db:
