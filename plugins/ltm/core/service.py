@@ -19,6 +19,7 @@ from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.ports.distill import DistilledFact, get_distiller
 from core.ports.embedding import EmbeddingGateway
+from core.ports.membus import WorkItem, get_bus
 from core.project import Project
 from core.recall import render_block, search, search_fused
 from core.store import Store
@@ -125,48 +126,57 @@ def capture_text(
     existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
     records = distiller.distill(text, existing)
     inserted = add_records(store, embedder, cfg, project, session_id, records)
-    # If an LLM distiller degraded to the heuristic (unreachable / timed out), park the
-    # raw delta so a later healthy capture can re-distil it and replace these facts.
+    # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
+    # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
+    # it and replaces these facts. Idempotent on the delta's content hash.
     if records and cfg.distiller in _LLM_DISTILLERS and all(r.degraded for r in records):
         fact_ids = [store.fact_id(project["key"], r.text) for r in records]
-        store.enqueue_redistill(project["key"], session_id, text, fact_ids)
+        payload = json.dumps(
+            {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
+        )
+        get_bus(cfg, store).publish(
+            WorkItem(
+                stage="rescue",
+                project_key=project["key"],
+                msg_id="rescue:" + store.fact_id(project["key"], text),
+                session_id=session_id,
+                payload=payload,
+            )
+        )
     return inserted
 
 
-def recover_pending(
-    store: Store,
-    embedder: EmbeddingGateway,
-    cfg: Config,
-    project: Project,
-    *,
-    limit: int = 3,
-    max_attempts: int = 6,
-) -> int:
-    """Re-distil parked deltas with the LLM; on success replace their heuristic facts.
+def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int = 3) -> int:
+    """Re-distil parked degraded deltas from the durable 'rescue' queue (design §6.4).
 
-    Runs at the head of every incremental capture. Cheap when the queue is empty (no
-    LLM call). Because the queue is shared, a healthy session recovers junk that a
-    stale or offline one produced; entries that keep failing are dropped after
-    ``max_attempts`` so a genuinely un-parseable delta can't retry forever.
+    The durable successor to the old ``pending_redistill`` path: drains the bus, so
+    retry/backoff and dead-lettering are handled by the queue rather than an ad-hoc
+    attempts column. Runs at the head of every incremental capture; cheap when empty
+    (no LLM call). No-op without an LLM distiller (a heuristic-only install can't
+    recover). The queue is global, so a healthy session rescues deltas any session
+    parked — each work item carries its own project key.
     """
     if cfg.distiller not in _LLM_DISTILLERS:
         return 0
+    bus = get_bus(cfg, store)
     distiller = get_distiller(cfg)
     recovered = 0
-    for entry in store.list_redistill(project["key"], limit):
+    for lease in bus.pull("rescue", limit):
+        try:
+            data = json.loads(lease.item.payload)
+        except (ValueError, TypeError):
+            lease.term()  # unparseable payload — dead-letter, never retry
+            continue
+        project = store.project_meta(data.get("project_key", ""))
         existing = [(row["id"], row["text"]) for row in store.recent(project["key"], 50)]
-        records = distiller.distill(entry["text"], existing)
+        records = distiller.distill(data.get("text", ""), existing)
         if records and not all(r.degraded for r in records):
-            try:
-                old_ids = json.loads(entry["fact_ids"]) if entry["fact_ids"] else []
-            except (ValueError, TypeError):
-                old_ids = []
-            store.delete_facts(old_ids)
-            add_records(store, embedder, cfg, project, entry["session_id"] or "", records)
-            store.clear_redistill(entry["id"])
+            store.delete_facts(data.get("fact_ids") or [])
+            add_records(store, embedder, cfg, project, data.get("session_id", ""), records)
+            lease.ack()
             recovered += 1
         else:
-            store.bump_redistill(entry["id"], max_attempts)
+            lease.nak()  # still degraded — retry later; dead-letters past bus_max_deliver
     return recovered
 
 
@@ -295,7 +305,7 @@ def capture_transcript_incremental(
     stored verbatim alongside the distilled facts. The cursor advances even when the
     delta yields no facts, so nothing is reprocessed.
     """
-    recover_pending(store, embedder, cfg, project)  # drain any heuristic-fallback backlog first
+    rescue(store, embedder, cfg)  # drain any heuristic-fallback backlog first (durable queue)
     cursor_key = f"{project['key']}:{session_id or transcript_path}"
     start = store.get_capture_cursor(cursor_key)
     text, prompts, end = extract_incremental_parts(transcript_path, start)

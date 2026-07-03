@@ -40,6 +40,12 @@ def _placeholders(seq) -> str:
     return ",".join("?" for _ in seq)
 
 
+def _content_id(project_key: str, text: str) -> str:
+    """Content-addressed id for a fact (per project, whitespace/case-normalised)."""
+    norm = " ".join(text.lower().split())
+    return hashlib.sha256(f"{project_key}\x00{norm}".encode()).hexdigest()[:24]
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
   id            TEXT PRIMARY KEY,
@@ -307,6 +313,33 @@ def _v10_work_queue(db: sqlite3.Connection) -> None:
     )
 
 
+def _v11_rescue_from_redistill(db: sqlite3.Connection) -> None:
+    # Cutover: the ad-hoc pending_redistill recovery queue becomes the durable bus
+    # 'rescue' stage. Move any parked deltas into work_queue (idempotent on msg_id)
+    # so the switch loses nothing, then drain the old table. Runs after _v10 (the
+    # work_queue table exists). The old table is left in place (empty, harmless).
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_redistill'").fetchone():
+        return
+    rows = db.execute("SELECT project_key, session_id, text, fact_ids, created_at FROM pending_redistill").fetchall()
+    for project_key, session_id, text, fact_ids, created_at in rows:
+        payload = json.dumps(
+            {
+                "text": text,
+                "fact_ids": json.loads(fact_ids) if fact_ids else [],
+                "session_id": session_id or "",
+                "project_key": project_key,
+            }
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO work_queue "
+            "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
+            " next_retry_at, lease_owner, lease_expires, enqueued_at) "
+            "VALUES (?, 'rescue', ?, ?, '', ?, 'pending', 0, 0, NULL, 0, ?)",
+            ("rescue:" + _content_id(project_key, text), project_key, session_id or "", payload, created_at or 0.0),
+        )
+    db.execute("DELETE FROM pending_redistill")
+
+
 # Ordered schema migrations. user_version marks how many have run; every step is
 # also individually idempotent (ADD COLUMN only if missing, CREATE ... IF NOT
 # EXISTS, rebuild only on first creation), so a database at any prior version —
@@ -322,6 +355,7 @@ _MIGRATIONS = [
     _v8_redistill,
     _v9_stm,
     _v10_work_queue,
+    _v11_rescue_from_redistill,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -360,8 +394,7 @@ class Store:
 
     @staticmethod
     def fact_id(project_key: str, text: str) -> str:
-        norm = " ".join(text.lower().split())
-        return hashlib.sha256(f"{project_key}\x00{norm}".encode()).hexdigest()[:24]
+        return _content_id(project_key, text)
 
     def exists(self, fact_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM facts WHERE id = ?", (fact_id,)).fetchone() is not None
@@ -881,36 +914,21 @@ class Store:
             cur = self.db.execute("DELETE FROM chunks WHERE project_key = ?", (project_key,))
         return cur.rowcount
 
-    # ---- Re-distillation recovery queue -------------------------------------------
+    def project_meta(self, project_key: str) -> Project:
+        """Reconstruct a project's {key, label, path} from any of its facts.
 
-    def enqueue_redistill(
-        self, project_key: str, session_id: str, text: str, fact_ids: list[str], now: float | None = None
-    ) -> None:
-        """Park a delta whose capture fell back to the heuristic, for later re-distillation."""
-        self.db.execute(
-            "INSERT INTO pending_redistill (project_key, session_id, text, fact_ids, attempts, created_at) "
-            "VALUES (?, ?, ?, ?, 0, ?)",
-            (project_key, session_id, text, json.dumps(fact_ids), _now(now)),
-        )
-        self.db.commit()
-
-    def list_redistill(self, project_key: str, limit: int = 3) -> list[sqlite3.Row]:
-        """Oldest pending recovery entries for a project (bounded per call to cap LLM cost)."""
-        return self.db.execute(
-            "SELECT id, session_id, text, fact_ids, attempts FROM pending_redistill "
-            "WHERE project_key = ? ORDER BY id ASC LIMIT ?",
-            (project_key, limit),
-        ).fetchall()
-
-    def clear_redistill(self, entry_id: int) -> None:
-        self.db.execute("DELETE FROM pending_redistill WHERE id = ?", (entry_id,))
-        self.db.commit()
-
-    def bump_redistill(self, entry_id: int, max_attempts: int) -> None:
-        """Record a failed recovery attempt; drop the entry once it has been tried enough."""
-        self.db.execute("UPDATE pending_redistill SET attempts = attempts + 1 WHERE id = ?", (entry_id,))
-        self.db.execute("DELETE FROM pending_redistill WHERE id = ? AND attempts >= ?", (entry_id, max_attempts))
-        self.db.commit()
+        Lets the global rescue drain re-add re-distilled facts under the right project
+        without the caller passing a Project (the work item carries only the key).
+        """
+        row = self.db.execute(
+            "SELECT project_label, project_path FROM facts WHERE project_key = ? LIMIT 1",
+            (project_key,),
+        ).fetchone()
+        return {
+            "key": project_key,
+            "label": row["project_label"] if row and row["project_label"] else project_key,
+            "path": row["project_path"] if row and row["project_path"] else "",
+        }
 
     # ---- Durable work queue (MemoryBus inproc adapter) ----------------------------
 
