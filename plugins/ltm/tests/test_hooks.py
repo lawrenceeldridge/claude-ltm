@@ -116,9 +116,17 @@ class PreToolUseGuardTests(unittest.TestCase):
         self.markers = []
 
     def tearDown(self):
-        for tag in ("prefer", "readguard"):
-            m = Path(tempfile.gettempdir()) / f"ltm-{tag}-{self.sess}.seen"
-            m.unlink(missing_ok=True)
+        for tag in ("prefer", "readguard", "consulted"):
+            (Path(tempfile.gettempdir()) / f"ltm-{tag}-{self.sess}.seen").unlink(missing_ok=True)
+
+    def _consulted_marker(self) -> Path:
+        return Path(tempfile.gettempdir()) / f"ltm-consulted-{self.sess}.seen"
+
+    def _mark_consulted(self, tool: str) -> None:
+        subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "mark_consulted.py")],
+            input=json.dumps({"tool_name": tool, "session_id": self.sess}), text=True, capture_output=True,
+        )
 
     def _run(self, payload: dict, enforce: str = "advisory") -> str:
         env = {**os.environ, "LTM_ENFORCE": enforce}
@@ -163,6 +171,29 @@ class PreToolUseGuardTests(unittest.TestCase):
         f.write("# doc\n" * 2000)
         f.close()
         self.assertEqual(self._run({"tool_name": "Read", "tool_input": {"file_path": f.name}}), "")
+
+    def test_strict_denies_grep_until_memory_consulted(self):
+        self._consulted_marker().unlink(missing_ok=True)
+        denied = self._run({"tool_name": "Grep", "tool_input": {"pattern": "x"}}, enforce="strict")
+        self.assertIn('"permissionDecision": "deny"', denied)
+        self._mark_consulted("mcp__plugin_ltm_ltm-memory__recall")  # now memory has been consulted
+        self.assertTrue(self._consulted_marker().exists())
+        allowed = self._run({"tool_name": "Grep", "tool_input": {"pattern": "x"}}, enforce="strict")
+        self.assertEqual(allowed, "")
+
+    def test_advisory_reminds_grep_when_not_consulted(self):
+        self._consulted_marker().unlink(missing_ok=True)
+        out = self._run({"tool_name": "Grep", "tool_input": {"pattern": "x"}})
+        self.assertIn("recall", out)
+
+    def test_consulted_grep_is_silent(self):
+        self._mark_consulted("mcp__plugin_ltm_ltm-memory__search_code")
+        self.assertEqual(self._run({"tool_name": "Grep", "tool_input": {"pattern": "x"}}), "")
+
+    def test_mark_consulted_skips_index_docs(self):
+        self._consulted_marker().unlink(missing_ok=True)
+        self._mark_consulted("mcp__plugin_ltm_ltm-memory__index_docs")
+        self.assertFalse(self._consulted_marker().exists())
 
     def test_strict_denies_read_of_indexed_code(self):
         from core.embedding import HashEmbedding

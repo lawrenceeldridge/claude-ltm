@@ -49,6 +49,11 @@ def _once(session: str, tag: str) -> bool:
         return True
 
 
+def _consulted(session: str) -> bool:
+    """Whether recall/search_code/search_docs has been called this session (marker from mark_consulted.py)."""
+    return (Path(tempfile.gettempdir()) / f"ltm-consulted-{session}.seen").exists()
+
+
 def _emit_context(msg: str) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg}}))
 
@@ -116,7 +121,16 @@ def main() -> int:
                     _emit_context(_READ_ADVICE)
         return 0
 
-    if _once(session, "prefer"):  # Grep | Glob | Task
+    # Grep / Glob / Task — enforce cheap-check-first ordering.
+    consulted = _consulted(session)
+    if tool in ("Grep", "Glob") and not consulted and enforce == "strict":
+        _emit_deny(
+            "Consult claude-ltm first — call `recall` and `search_code` / `search_docs` before a broad "
+            "search. Once you've checked memory/index, Grep/Glob flow freely (widen when they come back "
+            "weak or empty). Set LTM_ENFORCE=advisory to make this a reminder instead of a gate."
+        )
+        return 0
+    if not consulted and _once(session, "prefer"):  # advisory nudge, until memory is consulted
         _emit_context(_SEARCH_REMINDER)
     return 0
 
