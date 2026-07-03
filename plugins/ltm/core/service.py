@@ -390,7 +390,10 @@ def recall_prompt_block(
     hits = search(store, embedder, project, prompt, cfg)
     memory = render_block("Relevant memory from this project:", hits, cfg.max_chars)
     index = index_prompt_block(store, embedder, cfg, project, prompt)
-    return "\n\n".join(block for block in (memory, index) if block)
+    block = "\n\n".join(part for part in (memory, index) if part)
+    if block:  # ledger: cost side — bytes this injects into the turn (runs once per prompt)
+        store.record_usage(project["key"], "inject_prompt", bytes_in=len(block))
+    return block
 
 
 def recall_core_block(
@@ -400,7 +403,10 @@ def recall_core_block(
 ) -> str:
     rows = store.recent(project["key"], cfg.core_size)
     hits = [(1.0, row) for row in rows]
-    return render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    block = render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    if block:  # ledger: cost side — the once-per-session core injection
+        store.record_usage(project["key"], "inject_core", bytes_in=len(block))
+    return block
 
 
 def orientation_block(store: Store, project: Project, max_chars: int = 900) -> str:
