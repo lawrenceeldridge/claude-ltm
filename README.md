@@ -171,9 +171,18 @@ ltm consolidate [--all] run the sleep pass: promote recalled STM, prune (if enab
 ltm nats status|start|stop  manage the opt-in NATS server (bus=nats)
 ltm daemon              run the resident daemon (keeps the embedder warm)
 ltm viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
+ltm stats [--all]       token-savings ledger: injected (cost) vs saved (targeted reads + recall shortcuts), net
 ltm eval --backends …   benchmark embedding backends (see below)
 ltm demo                capture sample facts then recall (end-to-end proof)
 ```
+
+`ltm stats` is the effectiveness dashboard. It accounts both sides of the token
+budget from a local usage ledger: **cost** = bytes injected per prompt / at session
+start; **saved** = *measured* (a `get_symbol` / `get_doc_section` read of one unit
+instead of the whole file — real file-minus-body bytes) plus *estimated* (each `ok`
+recall verdict scored as one avoided grep+read, heuristic). The **net** is
+saved − cost. Passive injection that merely *might* have saved a search isn't
+credited, so net is a conservative floor, not a marketing number.
 
 ## Configuration
 
@@ -335,7 +344,7 @@ collapses them into a single project. The nearest `.ltm-root` ancestor wins.
 
 ## Status
 
-Working end to end (218 tests, 10 skipped). Defaults are local-first and
+Working end to end (223 tests, 10 skipped). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for

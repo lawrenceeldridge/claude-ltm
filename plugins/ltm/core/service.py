@@ -390,7 +390,10 @@ def recall_prompt_block(
     hits = search(store, embedder, project, prompt, cfg)
     memory = render_block("Relevant memory from this project:", hits, cfg.max_chars)
     index = index_prompt_block(store, embedder, cfg, project, prompt)
-    return "\n\n".join(block for block in (memory, index) if block)
+    block = "\n\n".join(part for part in (memory, index) if part)
+    if block:  # ledger: cost side — bytes this injects into the turn (runs once per prompt)
+        store.record_usage(project["key"], "inject_prompt", bytes_in=len(block))
+    return block
 
 
 def recall_core_block(
@@ -400,7 +403,44 @@ def recall_core_block(
 ) -> str:
     rows = store.recent(project["key"], cfg.core_size)
     hits = [(1.0, row) for row in rows]
-    return render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    block = render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    if block:  # ledger: cost side — the once-per-session core injection
+        store.record_usage(project["key"], "inject_core", bytes_in=len(block))
+    return block
+
+
+TOKENS_SAVED_PER_OK = 1200  # heuristic: an `ok` recall spares a grep + a couple of file reads
+BYTES_PER_TOKEN = 4  # rough char→token ratio for the byte-accounted ledger
+
+
+def usage_summary(store: Store, project_key: str | None = None) -> dict:
+    """The token-savings ledger for `ltm stats` and the viewer — both sides of the budget.
+
+    cost = bytes injected (per-prompt + session core); saved(measured) = whole-file reads
+    avoided via get_symbol/get_doc_section (file - body); saved(estimated) = `ok` recalls
+    × a per-search heuristic. net = saved - cost. Passive injection that merely *might*
+    have prevented a search is not credited, so net is a conservative floor.
+    """
+    recall = store.recall_stats(project_key)
+    usage = store.usage_stats(project_key)
+
+    def _s(field: str, *kinds: str) -> int:
+        return sum(usage.get(k, {}).get(field, 0) for k in kinds)
+
+    cost = _s("bytes_in", "inject_prompt", "inject_core") // BYTES_PER_TOKEN
+    saved_measured = _s("bytes_saved", "pull_symbol", "pull_doc") // BYTES_PER_TOKEN
+    ok = recall["by_verdict"].get("ok", 0)
+    saved_estimated = ok * TOKENS_SAVED_PER_OK
+    return {
+        "recalls": recall,
+        "injections": _s("n", "inject_prompt", "inject_core"),
+        "targeted_reads": _s("n", "pull_symbol", "pull_doc"),
+        "ok_recalls": ok,
+        "cost_tokens": cost,
+        "saved_measured_tokens": saved_measured,
+        "saved_estimated_tokens": saved_estimated,
+        "net_tokens": saved_measured + saved_estimated - cost,
+    }
 
 
 def orientation_block(store: Store, project: Project, max_chars: int = 900) -> str:

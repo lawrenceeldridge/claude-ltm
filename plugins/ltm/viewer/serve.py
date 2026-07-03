@@ -93,6 +93,9 @@ PAGE = """<!doctype html>
   .svc.ok .d { background:#3fb950; box-shadow:0 0 5px #3fb950; }
   .svc.warn .d { background:#e3b341; box-shadow:0 0 5px #e3b341; }
   .svc.warn b { color:#e3b341; }
+  #ledger { font:11px ui-monospace,Menlo,monospace; color:var(--muted); display:flex; align-items:center; gap:5px; cursor:default; white-space:pre; }
+  #ledger b { color:#3fb950; font-weight:600; }
+  #ledger.neg b { color:#e3b341; }
   .card.flash { animation:flash 1.2s ease-out; }
   @keyframes flash { from { border-color:#3fb950; } to { border-color:var(--border); } }
   .vtoggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
@@ -138,6 +141,7 @@ PAGE = """<!doctype html>
   </select>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
   <div id="status">
+    <span id="ledger" title="token-savings ledger">saved <b>…</b></span>
     <span class="svc" id="svc-bus">bus <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-emb">emb <b>…</b><span class="d"></span></span>
     <span class="svc" id="svc-dist">dist <b>…</b><span class="d"></span></span>
@@ -273,6 +277,7 @@ async function reloadRnr() {
 // Full re-render from the top: a query shows all ranked search hits; a blank query
 // shows the first (newest) page of the browse list, which grows via loadMore().
 async function reload(flashNew) {
+  loadLedger();  // token-savings ledger for the selected project (all views)
   if (view === 'index') return reloadIndex();
   if (view === 'rnr') return reloadRnr();
   const q = $('#q').value.trim();
@@ -351,6 +356,26 @@ async function loadHealth() {
   } catch (e) { /* fail-open: leave the last-known chips */ }
 }
 
+// Token-savings ledger for the selected project: net = saved (targeted reads + recall
+// shortcuts) - cost (bytes injected). Hover for the full breakdown.
+function fmtTok(n) {
+  const a = Math.abs(n);
+  return a >= 1000 ? (n / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(n);
+}
+async function loadLedger() {
+  const el = $('#ledger'); if (!el) return;
+  try {
+    const pk = $('#project').value;
+    const s = await (await fetch('/api/stats?project=' + encodeURIComponent(pk || ''))).json();
+    el.classList.toggle('neg', s.net_tokens < 0);
+    el.innerHTML = 'saved <b>~' + fmtTok(s.net_tokens) + '</b> tok';
+    el.title = 'net ~' + s.net_tokens.toLocaleString() + ' tokens (saved − cost)\n'
+      + '  cost injected:   ~' + s.cost_tokens.toLocaleString() + ' (' + s.injections + ' injections)\n'
+      + '  saved measured:  ~' + s.saved_measured_tokens.toLocaleString() + ' (' + s.targeted_reads + ' targeted reads)\n'
+      + '  saved estimated: ~' + s.saved_estimated_tokens.toLocaleString() + ' (' + s.ok_recalls + ' recall shortcuts)';
+  } catch (e) { /* fail-open: leave the last-known value */ }
+}
+
 // Live updates: the server pushes a `change` event whenever the memory store is
 // written to (capture from any session). EventSource auto-reconnects on drop.
 function connectStream() {
@@ -361,6 +386,7 @@ function connectStream() {
     await loadProjects();      // refresh counts + keep current project selected
     if (view !== 'index') await reload(true);  // stm/ltm/rnr refresh live; avoid churn during index build
     loadHealth();              // a write may mean the distiller/bus just came up
+    loadLedger();              // a capture / pull may have shifted the token ledger
   });
   es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
 }
@@ -369,6 +395,7 @@ function connectStream() {
   if (n) await reload();
   else $('#list').textContent = 'No memory captured yet.';
   loadHealth();
+  loadLedger();
   setInterval(loadHealth, 20000);  // reachability can change (nats/distiller up or down)
   connectStream();
 })();
@@ -551,6 +578,13 @@ class Handler(BaseHTTPRequestHandler):
             self._stream(cfg)
         elif parsed.path == "/api/health":
             self._send(200, json.dumps(_service_health(cfg)))
+        elif parsed.path == "/api/stats":
+            from core.service import usage_summary
+
+            project_key = parse_qs(parsed.query).get("project", [""])[0] or None
+            store = Store(cfg.db_path)
+            self._send(200, json.dumps(usage_summary(store, project_key)))
+            store.close()
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
             out = _disambiguate_labels(

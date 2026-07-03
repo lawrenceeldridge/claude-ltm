@@ -10,7 +10,7 @@ Subcommands:
   prune       delete all memory for the current project
   daemon      run the resident daemon (keeps the embedder warm)
   viewer      launch the localhost viewer
-  stats       recall telemetry + estimated searches/tokens saved
+  stats       recall telemetry + token-savings ledger (cost vs saved, net)
   drift       pin/check the embedding-drift canary
   demo        capture sample facts, then recall against them (end-to-end proof)
 """
@@ -151,7 +151,11 @@ def cmd_consolidate(args) -> int:
         promoted += replay(store, project, now)
         pruned += refine(store, cfg, project, now)
     purged = store.purge(cfg.purge_horizon_days * 86400, now) if cfg.purge_horizon_days > 0 else 0
-    gated = "" if (cfg.retention_keep_max > 0 or cfg.prune_threshold > 0) else " (pruning off — set retention_keep_max/prune_threshold)"
+    gated = (
+        ""
+        if (cfg.retention_keep_max > 0 or cfg.prune_threshold > 0)
+        else " (pruning off — set retention_keep_max/prune_threshold)"
+    )
     print(f"consolidated {len(targets)} project(s): promoted {promoted}, pruned {pruned}, purged {purged}{gated}")
     store.close()
     return 0
@@ -209,20 +213,27 @@ def cmd_viewer(args) -> int:
     return 0
 
 
-_TOKENS_SAVED_PER_OK = 1200  # heuristic: an `ok` recall spares a grep + a couple of file reads
-
-
 def cmd_stats(args) -> int:
     cfg = get_config()
     store = Store(cfg.db_path)
     scope = None if args.all else _project(cfg, args)["key"]
-    recall = store.recall_stats(scope)
-    ok = recall["by_verdict"].get("ok", 0)
     where = "all projects" if args.all else _project(cfg, args)["label"]
-    print(f"scope       : {where}")
-    print(f"facts       : {store.count()} active")
-    print(f"recalls     : {recall['total']} total  {recall['by_verdict']}")
-    print(f"searches saved (est.) : {ok}  (~{ok * _TOKENS_SAVED_PER_OK:,} tokens, heuristic)")
+    s = service.usage_summary(store, scope)
+    r = s["recalls"]
+
+    print(f"scope   : {where}")
+    print(f"facts   : {store.count()} active")
+    print(f"recalls : {r['total']} total  {r['by_verdict']}")
+    print("token ledger (heuristic, ~4 chars/token):")
+    print(f"  cost  — injected  : {s['injections']} injections, ~{s['cost_tokens']:,} tokens")
+    print(
+        f"  saved — measured  : {s['targeted_reads']} targeted reads, "
+        f"~{s['saved_measured_tokens']:,} tokens (whole-file reads avoided)"
+    )
+    print(
+        f"  saved — estimated : {s['ok_recalls']} recall shortcuts, ~{s['saved_estimated_tokens']:,} tokens (heuristic)"
+    )
+    print(f"  NET (saved-cost)  : ~{s['net_tokens']:,} tokens")
     store.close()
     return 0
 
@@ -336,7 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stop", action="store_true", help="stop the resident viewer")
     p.set_defaults(func=cmd_viewer)
 
-    p = sub.add_parser("stats", help="recall telemetry + estimated searches/tokens saved")
+    p = sub.add_parser("stats", help="recall telemetry + token-savings ledger (cost vs saved, net)")
     add_cwd(p)
     p.add_argument("--all", action="store_true", help="aggregate across every project")
     p.set_defaults(func=cmd_stats)

@@ -340,6 +340,25 @@ def _v11_rescue_from_redistill(db: sqlite3.Connection) -> None:
     db.execute("DELETE FROM pending_redistill")
 
 
+def _v13_usage(db: sqlite3.Connection) -> None:
+    # Usage ledger for the effectiveness dashboard (`ltm stats`): the two sides of the
+    # token budget. `inject_*` rows record what claude-ltm ADDS (bytes injected per
+    # prompt / at session start — the cost); `pull_*` rows record what it SAVES (a
+    # targeted get_symbol/get_doc_section read instead of the whole file — bytes_saved =
+    # file - body). Best-effort, append-only, aggregated by kind.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS usage_events ("
+        "  id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  ts          REAL,"
+        "  project_key TEXT,"
+        "  kind        TEXT,"
+        "  bytes_in    INTEGER DEFAULT 0,"
+        "  bytes_saved INTEGER DEFAULT 0"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_usage_project ON usage_events(project_key);"
+    )
+
+
 def _v12_index_meta(db: sqlite3.Connection) -> None:
     # Human name for a project's index. The index keys on hash(path) and stores only
     # relative source paths, so a project with chunks but no memory facts had nothing
@@ -372,6 +391,7 @@ _MIGRATIONS = [
     _v10_work_queue,
     _v11_rescue_from_redistill,
     _v12_index_meta,
+    _v13_usage,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -786,6 +806,31 @@ class Store:
             f"SELECT verdict, COUNT(*) AS c FROM recall_events {where} GROUP BY verdict", params
         ).fetchall()
         return {"total": total, "by_verdict": {row["verdict"]: row["c"] for row in rows}}
+
+    def record_usage(
+        self, project_key: str, kind: str, *, bytes_in: int = 0, bytes_saved: int = 0, now: float | None = None
+    ) -> None:
+        """Append one usage-ledger row (cost=bytes_in / saving=bytes_saved). Best-effort —
+        a telemetry failure must never break recall, capture, or a pull."""
+        try:
+            self.db.execute(
+                "INSERT INTO usage_events (ts, project_key, kind, bytes_in, bytes_saved) VALUES (?, ?, ?, ?, ?)",
+                (_now(now), project_key, kind, bytes_in, bytes_saved),
+            )
+            self.db.commit()
+        except sqlite3.Error:
+            pass
+
+    def usage_stats(self, project_key: str | None = None) -> dict:
+        """Aggregate the usage ledger by kind: {kind: {n, bytes_in, bytes_saved}}."""
+        where = "WHERE project_key = ?" if project_key else ""
+        params = (project_key,) if project_key else ()
+        rows = self.db.execute(
+            f"SELECT kind, COUNT(*) AS n, SUM(bytes_in) AS bi, SUM(bytes_saved) AS bs "
+            f"FROM usage_events {where} GROUP BY kind",
+            params,
+        ).fetchall()
+        return {r["kind"]: {"n": r["n"], "bytes_in": r["bi"] or 0, "bytes_saved": r["bs"] or 0} for r in rows}
 
     def data_version(self) -> int:
         """SQLite change counter — bumps on every commit by another connection (cache-invalidation signal)."""

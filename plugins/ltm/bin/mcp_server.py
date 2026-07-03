@@ -347,14 +347,31 @@ class _Engine:
         from core.index.index_recall import get_chunk
 
         project = self._project(args.get("project"))
-        return get_chunk(self.store, project, args.get("ref") or "")
+        res = get_chunk(self.store, project, args.get("ref") or "")
+        self._record_pull(project, res, "pull_doc")
+        return res
 
     def get_symbol(self, args: dict) -> dict:
         self._init()
         from core.index.index_recall import get_chunk
 
         project = self._project(args.get("project"))
-        return get_chunk(self.store, project, args.get("ref") or "")
+        res = get_chunk(self.store, project, args.get("ref") or "")
+        self._record_pull(project, res, "pull_symbol")
+        return res
+
+    def _record_pull(self, project: dict, res: dict, kind: str) -> None:
+        """Ledger: measured saving — reading one symbol/section instead of the whole file.
+        bytes_saved = file size - returned body. Best-effort; never breaks the pull."""
+        if not res.get("found"):
+            return
+        try:
+            import os
+
+            full = os.path.getsize(os.path.join(project["path"], res["source_path"]))
+            self.store.record_usage(project["key"], kind, bytes_saved=max(0, full - len(res.get("body") or "")))
+        except (OSError, KeyError, TypeError):
+            pass
 
     def doc_outline(self, args: dict) -> dict:
         self._init()
