@@ -147,15 +147,26 @@ def search_fused(
     return out
 
 
-def render_block(header: str, hits: list[Hit], max_chars: int) -> str:
+def render_block(header: str, hits: list[Hit], max_chars: int) -> tuple[str, list[str]]:
+    """Render the injected DTO (one line per fact) and return it with the ids of the
+    facts actually included, so the caller can attribute retrieval (recall_count).
+
+    The ids are the single source of truth for "what was put in front of the model":
+    only rows that fit under ``max_chars`` are counted. Returns ``("", [])`` on empty
+    or all-truncated input — the Null Object (inject nothing, attribute nothing).
+    """
     if not hits:
-        return ""
+        return "", []
     lines = [header]
+    ids: list[str] = []
     used = len(header)
     for _score_value, row in hits:
         line = f"- {row['text']}"
         if used + len(line) + 1 > max_chars:
             break
         lines.append(line)
+        ids.append(row["id"])
         used += len(line) + 1
-    return "\n".join(lines) if len(lines) > 1 else ""
+    if len(lines) == 1:
+        return "", []
+    return "\n".join(lines), ids

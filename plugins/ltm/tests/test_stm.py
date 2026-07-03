@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
-from core.recall import search  # noqa: E402
+from core.recall import render_block, search  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -196,6 +196,60 @@ class StmTierTests(unittest.TestCase):
         self.assertGreaterEqual(result["returned"], 1)  # sanity: it came back
         fid = self._fid("the memory viewer runs on localhost")
         self.assertGreaterEqual(self.store.get(fid)["recall_count"], 1)
+
+    def test_recall_prompt_block_records_attribution(self):
+        # The dominant (auto-injection) recall path must also attribute retrieval,
+        # otherwise recall_count never moves and replay-based promotion is inert.
+        text = "the daemon keeps the embedder warm"
+        self._add(text)
+        fid = self._fid(text)
+        self.assertEqual(self.store.get(fid)["recall_count"], 0)
+        block = service.recall_prompt_block(self.store, self.embedder, self.cfg, self.project, "daemon warm embedder")
+        self.assertIn(text, block)  # sanity: it was actually injected
+        row = self.store.get(fid)
+        self.assertEqual(row["recall_count"], 1)
+        self.assertIsNotNone(row["last_recalled"])
+
+    def test_recall_prompt_block_no_attribution_on_empty(self):
+        # Null Object: nothing injected -> nothing attributed.
+        self._add("unrelated fact about pyproject")
+        fid = self._fid("unrelated fact about pyproject")
+        cfg = replace(self.cfg, min_sim=0.99)  # gate everything out
+        block = service.recall_prompt_block(self.store, self.embedder, cfg, self.project, "zzz nonmatching")
+        self.assertEqual(block, "")
+        self.assertEqual(self.store.get(fid)["recall_count"], 0)
+
+    def test_recall_prompt_block_attribution_is_fail_open(self):
+        # A write failure on the hot path (e.g. a busy DB during detached capture) must
+        # never break recall: the block is still returned, no exception escapes.
+        text = "capture runs detached off the hot path"
+        self._add(text)
+
+        def boom(*_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        self.store.mark_recalled = boom  # type: ignore[method-assign]
+        block = service.recall_prompt_block(
+            self.store, self.embedder, self.cfg, self.project, "capture detached hot path"
+        )
+        self.assertIn(text, block)  # recall still succeeded despite the attribution failure
+
+    def test_render_block_returns_injected_ids_and_respects_budget(self):
+        # render_block is the single source of truth for "what was injected": it returns
+        # the ids of only the rows that fit under max_chars, and ("", []) on empty.
+        self.assertEqual(render_block("H", [], 1000), ("", []))
+        self._add("alpha fact one")
+        self._add("beta fact two")
+        r1 = self.store.get(self._fid("alpha fact one"))
+        r2 = self.store.get(self._fid("beta fact two"))
+        text, ids = render_block("Header:", [(1.0, r1), (1.0, r2)], 10_000)
+        self.assertEqual(ids, [r1["id"], r2["id"]])
+        self.assertIn("alpha fact one", text)
+        self.assertIn("beta fact two", text)
+        # Tight budget: only the first fact fits -> only its id is attributed.
+        tight = len("Header:") + len("- alpha fact one") + 1
+        _text, ids_tight = render_block("Header:", [(1.0, r1), (1.0, r2)], tight)
+        self.assertEqual(ids_tight, [r1["id"]])
 
     # --- recall parity: tier-agnostic by default ---
 

@@ -388,11 +388,22 @@ def recall_prompt_block(
     prompt: str,
 ) -> str:
     hits = search(store, embedder, project, prompt, cfg)
-    memory = render_block("Relevant memory from this project:", hits, cfg.max_chars)
+    memory, injected_ids = render_block("Relevant memory from this project:", hits, cfg.max_chars)
     index = index_prompt_block(store, embedder, cfg, project, prompt)
     block = "\n\n".join(part for part in (memory, index) if part)
     if block:  # ledger: cost side — bytes this injects into the turn (runs once per prompt)
         store.record_usage(project["key"], "inject_prompt", bytes_in=len(block))
+    # Retrieval attribution — a fact injected into the turn counts as recalled, feeding
+    # the testing-effect signal for the retention score and replay-based STM->LTM
+    # promotion (design section 2.5 / 3A). This is the dominant recall path, so without
+    # it recall_count never moves. Read-side bookkeeping, kept fail-open like the MCP
+    # path (recall_structured): a write error — e.g. a busy DB during detached capture —
+    # must never break recall.
+    if injected_ids:
+        try:
+            store.mark_recalled(injected_ids)
+        except sqlite3.Error:
+            pass
     return block
 
 
@@ -403,7 +414,10 @@ def recall_core_block(
 ) -> str:
     rows = store.recent(project["key"], cfg.core_size)
     hits = [(1.0, row) for row in rows]
-    block = render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    # The core is a stable, recency-based orientation block, not a query-driven
+    # retrieval — so its ids are discarded (attributing them would inflate recall_count
+    # for merely-recent facts every session and pollute the retention signal).
+    block, _ids = render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
     if block:  # ledger: cost side — the once-per-session core injection
         store.record_usage(project["key"], "inject_core", bytes_in=len(block))
     return block
