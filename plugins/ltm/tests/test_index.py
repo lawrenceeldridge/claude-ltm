@@ -24,9 +24,38 @@ from core.index import treesitter_symbols  # noqa: E402
 from core.index.chunking import make_slug, split_markdown  # noqa: E402
 from core.index.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
 from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
-from core.index.indexer import index_file, index_project  # noqa: E402
+from core.index.indexer import index_file, index_project, tree_signature  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import _SCHEMA_VERSION, Store  # noqa: E402
+
+
+class TreeSignatureTests(unittest.TestCase):
+    def test_signature_stable_and_reacts_to_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.md").write_text("alpha")
+            (root / "b.py").write_text("x = 1\n")
+            sig = tree_signature(root)
+            self.assertEqual(sig, tree_signature(root))  # stable when nothing changes
+            self.assertGreaterEqual(sig, 0)
+
+            (root / "c.md").write_text("gamma")  # add a file
+            added = tree_signature(root)
+            self.assertNotEqual(added, sig)
+
+            (root / "a.md").write_text("alpha plus more content")  # edit (size changes)
+            self.assertNotEqual(tree_signature(root), added)
+
+            (root / "c.md").unlink()  # remove a file
+            self.assertNotEqual(tree_signature(root), added)
+
+    def test_signature_ignores_non_indexed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.md").write_text("alpha")
+            before = tree_signature(root)
+            (root / "notes.bin").write_text("binary junk")  # not an indexed extension
+            self.assertEqual(tree_signature(root), before)
 
 
 class ChunkingTests(unittest.TestCase):

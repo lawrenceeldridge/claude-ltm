@@ -67,6 +67,26 @@ def _discover(root: Path) -> list[Path]:
     return found
 
 
+def tree_signature(root: str | Path) -> int:
+    """A cheap fingerprint of the indexable file tree (paths + mtime + size), no reads.
+
+    Merkle-rollup shortcut: if this hasn't changed since the last index, nothing was
+    added/removed/edited out-of-band, so the auto-index can skip the whole pass —
+    including loading the embedding model. Content hashing (the exact, per-file
+    freshness check) still happens inside index_project when the tree *has* changed.
+    Returns a non-negative 63-bit int (fits the capture_cursors INTEGER column).
+    """
+    parts = []
+    for path in sorted(_discover(Path(root))):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path}|{st.st_mtime_ns}|{st.st_size}")
+    digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    return int(digest[:16], 16) & 0x7FFFFFFFFFFFFFFF
+
+
 def _file_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
