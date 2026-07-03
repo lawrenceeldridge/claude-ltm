@@ -32,7 +32,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Grep|Glob|Read|Task",
+        "matcher": "Grep|Glob|Read|Task|Bash",
         "hooks": [
           {
             "type": "command",

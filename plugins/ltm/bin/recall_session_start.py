@@ -19,11 +19,13 @@ reexec_if_pinned()
 ROOT = plugin_root()
 
 MEMORY_FIRST_POLICY = (
-    "[ltm] Memory/index-first — before a broad Grep/Glob/Read/Task search, consult claude-ltm "
-    "(measured ~2/3 fewer tokens than grep+read on lookups): `recall` for prior decisions/facts; "
-    "`search_code` / `search_docs` for this project's indexed symbols / doc sections (ranked "
-    "outlines, not file scans); then `get_symbol` / `get_doc_section` for the exact span. Trust "
-    "confident hits and skip the wider search; widen only when recall/search is weak or empty."
+    "[ltm] Memory/index-first — at the start of a task, and before ANY codebase search or "
+    "whole-file read, consult claude-ltm first (measured ~2/3 fewer tokens than grep+read on "
+    "lookups). This applies to Grep/Glob/Task AND to grep/rg/find via Bash — those are searches "
+    "too. Order: `recall` for prior decisions/facts; `search_code` / `search_docs` for this "
+    "project's indexed symbols / doc sections (ranked outlines, not file scans); then "
+    "`get_symbol` / `get_doc_section` for the exact span. Trust confident hits and skip the wider "
+    "search; widen to Grep/Glob/Bash only when recall/search comes back weak or empty."
 )
 
 

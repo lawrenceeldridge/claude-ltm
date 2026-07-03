@@ -70,6 +70,9 @@ class Config:
     min_sim: float
     core_size: int
     max_chars: int
+    index_top_k: int
+    index_min_sim: float
+    index_max_chars: int
     cross_project: bool
     half_life_days: float
     w_sim: float
@@ -120,6 +123,11 @@ def get_config() -> Config:
         min_sim=_num(_opt("min_sim", "0.12"), 0.12),
         core_size=int(_num(_opt("core_size", "5"), 5)),
         max_chars=int(_num(_opt("max_chars", "800"), 800)),
+        # Passive index injection at UserPromptSubmit (0 = off). FTS-prefiltered then
+        # cosine-reranked, so it stays hot-path-cheap regardless of index size.
+        index_top_k=int(_num(_opt("index_top_k", "2"), 2)),
+        index_min_sim=_num(_opt("index_min_sim", "0.18"), 0.18),
+        index_max_chars=int(_num(_opt("index_max_chars", "400"), 400)),
         cross_project=_opt("cross_project", "false").lower() in ("1", "true", "yes", "on"),
         half_life_days=_num(_opt("half_life_days", "30"), 30),
         w_sim=_num(_opt("w_sim", "1.0"), 1.0),

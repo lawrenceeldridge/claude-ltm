@@ -216,6 +216,29 @@ class PreToolUseGuardTests(unittest.TestCase):
         self._mark_consulted("mcp__plugin_ltm_ltm-memory__index_docs")
         self.assertFalse(self._consulted_marker().exists())
 
+    # --- Bash search is gated like Grep/Glob (closes the Bash bypass) ---
+
+    def test_bash_search_reminds_when_not_consulted(self):
+        self._consulted_marker().unlink(missing_ok=True)
+        out = self._run({"tool_name": "Bash", "tool_input": {"command": "rg 'def foo' ."}})
+        self.assertIn("recall", out)
+
+    def test_bash_strict_denies_recursive_grep(self):
+        self._consulted_marker().unlink(missing_ok=True)
+        denied = self._run({"tool_name": "Bash", "tool_input": {"command": "grep -r foo src/"}}, enforce="strict")
+        self.assertIn('"permissionDecision": "deny"', denied)
+
+    def test_bash_pipe_filter_is_silent(self):
+        # `ps aux | grep` is a stdin filter, not a codebase search — must never be gated.
+        self._consulted_marker().unlink(missing_ok=True)
+        out = self._run({"tool_name": "Bash", "tool_input": {"command": "ps aux | grep python"}}, enforce="strict")
+        self.assertEqual(out, "")
+
+    def test_bash_non_search_is_silent(self):
+        self._consulted_marker().unlink(missing_ok=True)
+        out = self._run({"tool_name": "Bash", "tool_input": {"command": "ls -la && npm test"}}, enforce="strict")
+        self.assertEqual(out, "")
+
     def test_strict_denies_read_of_indexed_code(self):
         from core.index.indexer import index_file
         from core.ports.embedding import HashEmbedding

@@ -23,7 +23,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ltm"
-version = "0.10.0"
+version = "0.11.0"
 description = "Token-first, cross-project long-term memory for Claude Code (plugin)."
 requires-python = ">=3.10"
 license = "MIT"

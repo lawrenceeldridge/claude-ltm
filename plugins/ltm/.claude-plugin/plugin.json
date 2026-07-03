@@ -1,7 +1,7 @@
 {
   "name": "ltm",
   "displayName": "Long-Term Memory",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Token-first, cross-project long-term memory for Claude Code. Captures sessions off the interactive path, distils atomic facts, embeds them compactly, and injects relevant memory just-in-time via hooks. Local-first — no API key, no network.",
   "author": {
     "name": "Lawrence Eldridge"
@@ -89,6 +89,26 @@
       "description": "Hard cap on characters injected per hook — the token budget guard.",
       "default": 800,
       "min": 100
+    },
+    "index_top_k": {
+      "type": "number",
+      "title": "Index hits per prompt",
+      "description": "Passive code/docs index hits injected just-in-time on each prompt (0 = off). FTS-prefiltered then cosine-reranked, so it stays cheap regardless of index size.",
+      "default": 2,
+      "min": 0
+    },
+    "index_min_sim": {
+      "type": "number",
+      "title": "Index similarity threshold",
+      "description": "Minimum cosine similarity for an indexed chunk to be injected passively. Higher = stricter.",
+      "default": 0.18
+    },
+    "index_max_chars": {
+      "type": "number",
+      "title": "Max injected index characters",
+      "description": "Hard cap on characters for the passive index block per prompt.",
+      "default": 400,
+      "min": 0
     },
     "cross_project": {
       "type": "boolean",

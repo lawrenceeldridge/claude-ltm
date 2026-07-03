@@ -324,6 +324,62 @@ def capture_transcript_incremental(
     return inserted
 
 
+def index_prompt_block(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    prompt: str,
+) -> str:
+    """Passive, hot-path-safe index nudge for the UserPromptSubmit hook.
+
+    Surfaces the most relevant indexed code symbols / doc sections for the prompt so the
+    index is consulted on *every* turn, not only when the model chooses to call
+    ``search_code``. FTS-prefilters to a small candidate pool then cosine-reranks only
+    those — so the cost is bounded by the pool, never the whole index (which can be tens
+    of thousands of chunks). Relevance-gated by ``index_min_sim`` and byte-capped;
+    returns ``""`` (Null Object) when nothing clears the gate, so irrelevant turns and
+    keyword-less prompts cost zero tokens.
+    """
+    if cfg.index_top_k <= 0:
+        return ""
+    candidate_ids = store.chunk_fts_search(project["key"], prompt, limit=max(cfg.index_top_k * 6, 12))
+    if not candidate_ids:
+        return ""
+    qvec = embedder.embed_one(prompt)
+    qdim = len(qvec)
+    scored: list[tuple[float, sqlite3.Row]] = []
+    for cid in candidate_ids:
+        row = store.get_chunk(project["key"], cid)
+        if row is None or not row["vec_int8"] or (row["dim"] and row["dim"] != qdim):
+            continue
+        sim = cosine(qvec, dequantize_int8(row["vec_int8"], row["scale"]))
+        if sim >= cfg.index_min_sim:
+            scored.append((sim, row))
+    if not scored:
+        return ""
+    scored.sort(key=lambda sr: sr[0], reverse=True)
+    return _render_index_block(scored[: cfg.index_top_k], cfg.index_max_chars)
+
+
+def _render_index_block(scored: list[tuple[float, sqlite3.Row]], max_chars: int) -> str:
+    """One compact line per hit (path › title — summary); `get_symbol` fetches the body."""
+    lines = ["Relevant indexed code/docs (use `search_code` / `get_symbol` for full source):"]
+    used = 0
+    for _sim, row in scored:
+        label = row["title"] or row["anchor"] or ""
+        summary = " ".join((row["summary"] or "").split())
+        line = f"- {row['source_path']} › {label}"
+        if summary:
+            line += f" — {summary}"
+        line = line[:200]
+        if len(lines) > 1 and used + len(line) > max_chars:
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def recall_prompt_block(
     store: Store,
     embedder: EmbeddingGateway,
@@ -332,7 +388,9 @@ def recall_prompt_block(
     prompt: str,
 ) -> str:
     hits = search(store, embedder, project, prompt, cfg)
-    return render_block("Relevant memory from this project:", hits, cfg.max_chars)
+    memory = render_block("Relevant memory from this project:", hits, cfg.max_chars)
+    index = index_prompt_block(store, embedder, cfg, project, prompt)
+    return "\n\n".join(block for block in (memory, index) if block)
 
 
 def recall_core_block(
