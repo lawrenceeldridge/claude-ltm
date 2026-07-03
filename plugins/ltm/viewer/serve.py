@@ -83,10 +83,16 @@ PAGE = """<!doctype html>
                     text-transform:uppercase; letter-spacing:.04em; color:#e3b341; }
   .summary-sec p { margin:0; color:#adbac7; white-space:pre-wrap; }
   .empty { color:var(--muted); padding:24px 0; }
-  #live { margin-inline-start:auto; font:12px ui-monospace,Menlo,monospace; color:var(--muted);
-          display:flex; align-items:center; gap:6px; }
+  #status { margin-inline-start:auto; display:flex; align-items:center; gap:14px; }
+  #live { font:12px ui-monospace,Menlo,monospace; color:var(--muted); display:flex; align-items:center; gap:6px; }
   #live .dot { width:8px; height:8px; border-radius:50%; background:#3fb950; box-shadow:0 0 6px #3fb950; }
   #live.off .dot { background:var(--muted); box-shadow:none; }
+  .svc { font:11px ui-monospace,Menlo,monospace; color:var(--muted); display:flex; align-items:center; gap:5px; cursor:default; }
+  .svc b { color:#adbac7; font-weight:600; }
+  .svc .d { width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .svc.ok .d { background:#3fb950; box-shadow:0 0 5px #3fb950; }
+  .svc.warn .d { background:#e3b341; box-shadow:0 0 5px #e3b341; }
+  .svc.warn b { color:#e3b341; }
   .card.flash { animation:flash 1.2s ease-out; }
   @keyframes flash { from { border-color:#3fb950; } to { border-color:var(--border); } }
   .vtoggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
@@ -131,7 +137,12 @@ PAGE = """<!doctype html>
     <option value="code_symbol">code</option>
   </select>
   <input id="q" placeholder="semantic search within project… (blank = list all)">
-  <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
+  <div id="status">
+    <span class="svc" id="svc-bus">bus <b>…</b><span class="d"></span></span>
+    <span class="svc" id="svc-emb">emb <b>…</b><span class="d"></span></span>
+    <span class="svc" id="svc-dist">dist <b>…</b><span class="d"></span></span>
+    <span id="live" class="off"><span class="dot"></span><span id="live-label">connecting…</span></span>
+  </div>
 </header>
 <main><div id="list" class="empty">Loading…</div></main>
 <script>
@@ -315,6 +326,23 @@ window.addEventListener('scroll', () => {
   if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) loadMore();
 });
 
+// Service health: the configured bus / embedding / distiller backends and whether
+// each is reachable (green = configured backend live, amber = on stdlib fallback).
+function svcChip(el, name, s) {
+  if (!el || !s) return;
+  el.className = 'svc ' + (s.state || 'warn');
+  el.title = name + ': ' + s.backend + ' — ' + s.detail;
+  el.innerHTML = name + ' <b>' + esc(s.backend) + '</b><span class="d"></span>';
+}
+async function loadHealth() {
+  try {
+    const h = await (await fetch('/api/health')).json();
+    svcChip($('#svc-bus'), 'bus', h.bus);
+    svcChip($('#svc-emb'), 'emb', h.embedding);
+    svcChip($('#svc-dist'), 'dist', h.distiller);
+  } catch (e) { /* fail-open: leave the last-known chips */ }
+}
+
 // Live updates: the server pushes a `change` event whenever the memory store is
 // written to (capture from any session). EventSource auto-reconnects on drop.
 function connectStream() {
@@ -324,6 +352,7 @@ function connectStream() {
   es.addEventListener('change', async () => {
     await loadProjects();      // refresh counts + keep current project selected
     if (view !== 'index') await reload(true);  // stm/ltm/rnr refresh live; avoid churn during index build
+    loadHealth();              // a write may mean the distiller/bus just came up
   });
   es.onerror = () => { badge.classList.add('off'); label.textContent = 'reconnecting…'; };
 }
@@ -331,6 +360,8 @@ function connectStream() {
   const n = await loadProjects();
   if (n) await reload();
   else $('#list').textContent = 'No memory captured yet.';
+  loadHealth();
+  setInterval(loadHealth, 20000);  // reachability can change (nats/distiller up or down)
   connectStream();
 })();
 </script>
@@ -343,6 +374,74 @@ def _int_param(params: dict, name: str) -> int | None:
         return int(params.get(name, [""])[0])
     except (TypeError, ValueError):
         return None
+
+
+def _tcp_ok(url: str, timeout: float = 0.6) -> bool:
+    """Best-effort TCP reachability for a host:port URL (nats://, http://, https://).
+
+    Fail-open: any parse or socket error means "unreachable", never an exception.
+    """
+    try:
+        u = urlparse(url)
+        host = u.hostname
+        port = u.port or {"https": 443, "http": 80, "nats": 4222}.get(u.scheme, 0)
+        if not host or not port:
+            return False
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _service_health(cfg) -> dict:
+    """Resolve the configured backends and cheaply probe reachability for the header.
+
+    Everything fails open, so a subsystem is reported ``ok`` (configured backend live)
+    or ``warn`` (configured backend unavailable — running on the stdlib fallback), never
+    a hard error. Read-only and off the recall hot path (viewer only).
+    """
+    # MemoryBus — nats probed by reachability; inproc is always available.
+    if cfg.bus == "nats":
+        ok = _tcp_ok(cfg.nats_url)
+        bus = {
+            "backend": "nats",
+            "state": "ok" if ok else "warn",
+            "detail": cfg.nats_url if ok else f"{cfg.nats_url} unreachable — falling open to inproc",
+        }
+    else:
+        bus = {"backend": "inproc", "state": "ok", "detail": "sqlite work_queue"}
+
+    # Embedding — fastembed needs its provisioned venv; hash is the stdlib default.
+    if cfg.embedding == "fastembed":
+        try:
+            from core.provision import is_provisioned
+
+            prov = is_provisioned(cfg.data_dir)
+        except Exception:
+            prov = False
+        bge = cfg.embedding_model or "bge-base"
+        embedding = {
+            "backend": "fastembed",
+            "state": "ok" if prov else "warn",
+            "detail": bge if prov else "venv not provisioned — falling open to hash",
+        }
+    else:
+        embedding = {"backend": "hash", "state": "ok", "detail": "lexical (stdlib)"}
+
+    # Distiller — an LLM backend is probed at its base URL; heuristic is stdlib.
+    if cfg.distiller == "heuristic":
+        distiller = {"backend": "heuristic", "state": "ok", "detail": "line extraction (stdlib)"}
+    else:
+        ok = _tcp_ok(cfg.distiller_base_url)
+        label = cfg.distiller + (f" · {cfg.distiller_model}" if cfg.distiller_model else "")
+        host = urlparse(cfg.distiller_base_url).netloc or cfg.distiller_base_url
+        distiller = {
+            "backend": label,
+            "state": "ok" if ok else "warn",
+            "detail": host if ok else f"{host} unreachable — falling open to heuristic",
+        }
+
+    return {"bus": bus, "embedding": embedding, "distiller": distiller}
 
 
 def _card_from_rows(rows, score=None) -> dict:
@@ -423,6 +522,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE, "text/html; charset=utf-8")
         elif parsed.path == "/events":
             self._stream(cfg)
+        elif parsed.path == "/api/health":
+            self._send(200, json.dumps(_service_health(cfg)))
         elif parsed.path == "/api/projects":
             store = Store(cfg.db_path)
             out = [
