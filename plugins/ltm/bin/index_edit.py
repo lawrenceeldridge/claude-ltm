@@ -19,7 +19,7 @@ from pathlib import Path
 
 from _bootstrap import plugin_root, reexec_if_pinned
 
-# Index-eligible extensions — kept in step with core.indexer's _INDEX_EXTENSIONS.
+# Index-eligible extensions — kept in step with core.index.indexer's _INDEX_EXTENSIONS.
 _EXT = {".md", ".markdown", ".mdx", ".mdc", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 
 
@@ -60,8 +60,8 @@ def _acquire(lock: Path) -> bool:
 
 def _run_worker() -> None:
     from core.config import get_config
-    from core.embedding import get_embedder
-    from core.indexer import index_file
+    from core.index.indexer import index_file
+    from core.ports.embedding import get_embedder
     from core.project import resolve_project
     from core.store import Store
 

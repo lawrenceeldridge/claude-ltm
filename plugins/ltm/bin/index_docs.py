@@ -70,8 +70,8 @@ def _run_worker(payload_path: str) -> None:
             pass
 
     from core.config import get_config
-    from core.embedding import get_embedder
-    from core.indexer import index_project
+    from core.index.indexer import index_project
+    from core.ports.embedding import get_embedder
     from core.project import resolve_project
     from core.store import Store
 

@@ -13,13 +13,13 @@ import os
 import sqlite3
 import time
 
-from core.confidence import compute_confidence
 from core.config import Config
-from core.distill import DistilledFact, get_distiller
-from core.embedding import EmbeddingGateway
-from core.lexical import has_overlap
+from core.domain.confidence import compute_confidence
+from core.domain.lexical import has_overlap
+from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
+from core.ports.distill import DistilledFact, get_distiller
+from core.ports.embedding import EmbeddingGateway
 from core.project import Project
-from core.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.recall import render_block, search, search_fused
 from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text

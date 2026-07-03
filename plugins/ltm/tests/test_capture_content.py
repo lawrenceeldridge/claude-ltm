@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
+from core.ports.distill import _MAX_INPUT_CHARS, _clip, heuristic_facts  # noqa: E402
 from core.transcript import extract_text  # noqa: E402
 
 

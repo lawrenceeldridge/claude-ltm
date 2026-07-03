@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.code_symbols import Symbol
+from core.index.code_symbols import Symbol
 
 _SIG_MAX = 240
 

@@ -29,11 +29,21 @@ the core, and keeps capture off the hot path. The canonical map (from
 bin/*  (composition roots, driving adapters: hooks, CLI, MCP server, daemon)
    │ wires
    ▼
-core/  (domain + ports: service, store, recall, indexer, scoring, distill, embedding)
+core/  (app + persistence at root: service, store, config, project, provision, transcript, daemon_client)
+  ├─ domain/   (pure Functional Core: scoring, quantize, fusion, confidence, lexical)
+  ├─ ports/    (Separated Interfaces: embedding, distill, [membus])
+  ├─ recall/   (read side — search/render; `from core.recall import …`)
+  ├─ index/    (code/docs index: indexer, chunking, code_symbols, treesitter_symbols, drift, index_recall)
+  └─ consolidation/  (the sleep pass — replay/refine/rescue; added in Phase 4)
    │ depends on interfaces, not implementations
    ▼
-core/adapters/  (driven adapters: fastembed_gw, …)  ← the only place heavy deps import
+core/adapters/  (driven adapters: fastembed_gw, [inproc_bus, nats_bus], …)  ← the only place heavy deps import
 ```
+
+The `core/` tree groups by concern (domain/ports/recall/index), keeping the app-service +
+persistence + cross-cutting modules at the root (the fastapi-best-practices convention:
+`config`/`store`/`main`-equivalents at the top). It is still **one bounded context, one
+`Store`** — the subpackages are internal module boundaries, not separate contexts.
 
 - **Dependencies point inward.** `core/` never imports from `bin/`; `core/` depends
   on the *interface* (`embedding.py`, the distiller protocol), not on `fastembed`.

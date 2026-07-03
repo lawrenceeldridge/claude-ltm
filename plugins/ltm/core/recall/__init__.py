@@ -2,7 +2,7 @@
 
 Ranking is not similarity alone. Each candidate that clears the similarity gate
 (the context cue) gets a Priority Score combining similarity, recency decay and
-frequency (see ``core.scoring``). Superseded facts are excluded at the SQL layer,
+frequency (see ``core.domain.scoring``). Superseded facts are excluded at the SQL layer,
 so a replaced fact can never resurface. Everything the model sees is capped by
 ``max_chars`` so the token budget is bounded.
 """
@@ -13,12 +13,12 @@ import sqlite3
 import time
 
 from core.config import Config
-from core.embedding import EmbeddingGateway
-from core.fusion import Channel, fuse
-from core.lexical import token_set
+from core.domain.fusion import Channel, fuse
+from core.domain.lexical import token_set
+from core.domain.quantize import cosine, dequantize_int8
+from core.domain.scoring import frequency_boost, priority, recency_decay
+from core.ports.embedding import EmbeddingGateway
 from core.project import Project
-from core.quantize import cosine, dequantize_int8
-from core.scoring import frequency_boost, priority, recency_decay
 from core.store import Store
 
 Hit = tuple[float, sqlite3.Row]

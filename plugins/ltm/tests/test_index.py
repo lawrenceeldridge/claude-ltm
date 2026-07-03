@@ -19,13 +19,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
-from core import treesitter_symbols  # noqa: E402
-from core.chunking import make_slug, split_markdown  # noqa: E402
-from core.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
-from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
-from core.indexer import index_file, index_project  # noqa: E402
+from core.index import treesitter_symbols  # noqa: E402
+from core.index.chunking import make_slug, split_markdown  # noqa: E402
+from core.index.code_symbols import extract_code_symbols, extract_symbols  # noqa: E402
+from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.index.indexer import index_file, index_project  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import _SCHEMA_VERSION, Store  # noqa: E402
 
 

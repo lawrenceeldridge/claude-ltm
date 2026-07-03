@@ -24,8 +24,8 @@ ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().par
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
-from core.embedding import get_embedder  # noqa: E402
-from core.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
+from core.ports.embedding import get_embedder  # noqa: E402
 from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
 

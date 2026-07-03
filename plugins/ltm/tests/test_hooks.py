@@ -23,8 +23,8 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.distill import DistilledFact  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.distill import DistilledFact  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -217,8 +217,8 @@ class PreToolUseGuardTests(unittest.TestCase):
         self.assertFalse(self._consulted_marker().exists())
 
     def test_strict_denies_read_of_indexed_code(self):
-        from core.embedding import HashEmbedding
-        from core.indexer import index_file
+        from core.index.indexer import index_file
+        from core.ports.embedding import HashEmbedding
         from core.project import resolve_project
 
         data, repo = tempfile.mkdtemp(), tempfile.mkdtemp()

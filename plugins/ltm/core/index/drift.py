@@ -15,8 +15,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from core.embedding import EmbeddingGateway
-from core.quantize import cosine
+from core.domain.quantize import cosine
+from core.ports.embedding import EmbeddingGateway
 
 CANARY_PHRASES = [
     "the deployment pipeline runs on continuous integration",

@@ -29,13 +29,13 @@ the top-level architectural decision every pattern below serves.
 |---|---|
 | `core/store.py` | **Repository over Data Mapper** — all memory + index access; owns the SQLite schema/migrations |
 | `core/service.py` | **Command / Handler** — the capture pipeline, idempotent per fact |
-| `core/recall.py` | **Query Object** (`search`, `search_fused`) + **DTO / Null Object** (`render_block`) |
-| `core/distill.py` | **Functional Core** (pure `heuristic_facts`, parsers) + **Strategy behind Separated Interface** (`Distiller` ABC) |
-| `core/scoring.py`, `core/quantize.py`, `core/fusion.py`, `core/confidence.py`, `core/lexical.py` | **Functional Core** — pure ranking / quantisation / fusion |
-| `core/embedding.py` | **Gateway + Separated Interface** (`EmbeddingGateway` ABC, `get_embedder`) |
+| `core/recall/` (`__init__.py`) | **Query Object** (`search`, `search_fused`) + **DTO / Null Object** (`render_block`) |
+| `core/ports/distill.py` | **Functional Core** (pure `heuristic_facts`, parsers) + **Strategy behind Separated Interface** (`Distiller` ABC) |
+| `core/domain/` (`scoring.py`, `quantize.py`, `fusion.py`, `confidence.py`, `lexical.py`) | **Functional Core** — pure ranking / quantisation / fusion |
+| `core/ports/embedding.py` | **Gateway + Separated Interface** (`EmbeddingGateway` ABC, `get_embedder`) |
 | `core/adapters/fastembed_gw.py` | **Secondary (driven) adapter** — the only place heavy deps import |
 | `core/daemon_client.py` | thin client → resident daemon, **fail-open in-process fallback** |
-| `core/indexer.py`, `chunking.py`, `code_symbols.py`, `treesitter_symbols.py` | code/docs index pipeline (same Repository, Functional-Core parsers) |
+| `core/index/` (`indexer.py`, `chunking.py`, `code_symbols.py`, `treesitter_symbols.py`, `drift.py`, `index_recall.py`) | code/docs index pipeline (same Repository, Functional-Core parsers) |
 | `bin/*` (`recall_prompt.py`, `capture.py`, `mcp_server.py`, `daemon.py`, `ltm`, …), `bin/_bootstrap.py` | **Composition Roots** — read config, pick adapters, call the core |
 
 ---

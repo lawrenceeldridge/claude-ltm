@@ -29,7 +29,7 @@ ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().par
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
-from core.embedding import get_embedder  # noqa: E402
+from core.ports.embedding import get_embedder  # noqa: E402
 from core.project import resolve_project  # noqa: E402
 from core.store import Store  # noqa: E402
 from core import service  # noqa: E402
@@ -185,7 +185,7 @@ def cmd_stats(args) -> int:
 
 
 def cmd_drift(_args) -> int:
-    from core.drift import check, pin
+    from core.index.drift import check, pin
 
     cfg = get_config()
     embedder = get_embedder(cfg)

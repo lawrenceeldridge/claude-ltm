@@ -17,9 +17,9 @@ sys.path.insert(0, str(ROOT / "bin"))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.drift import check, pin  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
-from core.fusion import Channel, fuse  # noqa: E402
+from core.domain.fusion import Channel, fuse  # noqa: E402
+from core.index.drift import check, pin  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.recall import search_fused  # noqa: E402
 from core.store import Store  # noqa: E402
 

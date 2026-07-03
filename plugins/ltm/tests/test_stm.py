@@ -8,6 +8,7 @@ attribution, and that recall stays tier-agnostic by default (behaviour parity).
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.recall import search  # noqa: E402
 from core.store import Store  # noqa: E402
 
@@ -56,6 +57,35 @@ class StmTierTests(unittest.TestCase):
         self.assertIn("tier", cols)
         self.assertIn("recall_count", cols)
         self.assertIn("last_recalled", cols)
+
+    def test_upgrade_from_v8_adds_tier_without_error(self):
+        # Regression: the tier index must be created by the migration, not the base
+        # schema (which runs before migrations). Opening a pre-v9 db must not fail, and
+        # existing rows default to the long-term store.
+        p = Path(self.tmp.name) / "legacy.db"
+        con = sqlite3.connect(p)
+        con.executescript(
+            "CREATE TABLE facts (id TEXT PRIMARY KEY, project_key TEXT NOT NULL, project_label TEXT, "
+            "project_path TEXT, session_id TEXT, kind TEXT, text TEXT NOT NULL, title TEXT, subtitle TEXT, "
+            "narrative TEXT, files TEXT, type TEXT, observation_id TEXT, created_at REAL, last_seen REAL, "
+            "dim INTEGER, scale REAL, vec_int8 BLOB, vec_bits BLOB, importance REAL DEFAULT 0, "
+            "frequency INTEGER DEFAULT 1, status TEXT DEFAULT 'active', superseded_by TEXT);"
+        )
+        con.execute(
+            "INSERT INTO facts (id, project_key, text, status, created_at, last_seen, frequency) "
+            "VALUES ('x', 'test', 'legacy fact', 'active', 1.0, 1.0, 1)"
+        )
+        con.execute("PRAGMA user_version = 8")
+        con.commit()
+        con.close()
+
+        store = Store(p)  # must migrate cleanly
+        row = store.get("x")
+        self.assertEqual(row["tier"], "ltm")  # existing rows -> long-term
+        self.assertEqual(row["recall_count"], 0)
+        idx = store.db.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_facts_tier'").fetchone()
+        self.assertIsNotNone(idx)
+        store.close()
 
     # --- fresh capture is STM ---
 

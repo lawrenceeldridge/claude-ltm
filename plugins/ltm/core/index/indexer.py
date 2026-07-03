@@ -19,13 +19,13 @@ import os
 import time
 from pathlib import Path
 
-from core.chunking import split_markdown
-from core.code_symbols import extract_code_symbols
 from core.config import Config
-from core.distill import get_distiller
-from core.embedding import EmbeddingGateway
+from core.domain.quantize import quantize_int8
+from core.index.chunking import split_markdown
+from core.index.code_symbols import extract_code_symbols
+from core.ports.distill import get_distiller
+from core.ports.embedding import EmbeddingGateway
 from core.project import Project
-from core.quantize import quantize_int8
 from core.store import Store
 
 _DOC_EXTENSIONS = {".md", ".markdown", ".mdx", ".mdc"}

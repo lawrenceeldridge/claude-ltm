@@ -19,7 +19,9 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.distill import (  # noqa: E402
+from core.domain.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8  # noqa: E402
+from core.domain.scoring import frequency_boost, priority, recency_decay  # noqa: E402
+from core.ports.distill import (  # noqa: E402
     ClaudeCliDistiller,
     DistilledFact,
     HeuristicDistiller,
@@ -27,11 +29,9 @@ from core.distill import (  # noqa: E402
     get_distiller,
     parse_records,
 )
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.project import resolve_project  # noqa: E402
-from core.quantize import cosine, dequantize_int8, hamming, pack_bits, quantize_int8  # noqa: E402
 from core.recall import search  # noqa: E402
-from core.scoring import frequency_boost, priority, recency_decay  # noqa: E402
 from core.store import Store  # noqa: E402
 
 

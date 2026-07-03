@@ -18,8 +18,8 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.distill import DistilledFact  # noqa: E402
-from core.embedding import HashEmbedding  # noqa: E402
+from core.ports.distill import DistilledFact  # noqa: E402
+from core.ports.embedding import HashEmbedding  # noqa: E402
 from core.store import _SCHEMA_VERSION, Store  # noqa: E402
 
 

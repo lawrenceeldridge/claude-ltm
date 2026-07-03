@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project_key, status);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);
-CREATE INDEX IF NOT EXISTS idx_facts_tier ON facts(project_key, tier, status);
+-- NOTE: idx_facts_tier is created in migration _v9_stm, not here — the base schema
+-- runs before migrations, so an index referencing the migration-added `tier` column
+-- must not live here (it would fail opening a pre-v9 database).
 
 CREATE TABLE IF NOT EXISTS recall_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
