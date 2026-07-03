@@ -105,7 +105,9 @@ class InprocBusTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LTM_DATA_DIR"] = self.tmp.name
         # Immediate retries so the dead-letter path is testable without sleeping.
-        self.cfg = replace(get_config(), bus_backoff=(0.0,), bus_max_deliver=2)
+        # Pin bus=inproc so the ambient LTM_BUS env (a user's settings.json) can't
+        # route these through NATS.
+        self.cfg = replace(get_config(), bus="inproc", bus_backoff=(0.0,), bus_max_deliver=2)
         self.store = Store(self.cfg.db_path)
         self.bus = InprocBus(self.cfg, self.store)
 

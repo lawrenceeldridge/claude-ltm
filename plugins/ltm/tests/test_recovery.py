@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -50,7 +51,9 @@ class RecoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LTM_DATA_DIR"] = self.tmp.name
         os.environ["LTM_DISTILLER"] = "ollama"  # an LLM distiller, so recovery is active
-        self.cfg = get_config()
+        # Pin bus=inproc so an ambient LTM_BUS (a user's settings.json) can't route the
+        # recovery queue through NATS instead of the local sqlite work_queue.
+        self.cfg = replace(get_config(), bus="inproc")
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.project = {"key": "p", "path": "/tmp/p", "label": "p"}
@@ -119,7 +122,7 @@ class RecoveryTests(unittest.TestCase):
         with mock.patch.object(service, "get_distiller", return_value=_StubDistiller(_degraded())):
             service.capture_text(self.store, self.embedder, self.cfg, self.project, "s1", "raw")
         os.environ["LTM_DISTILLER"] = "heuristic"
-        cfg = get_config()
+        cfg = replace(get_config(), bus="inproc")
         self.assertEqual(service.rescue(self.store, self.embedder, cfg), 0)
         self.assertEqual(self._rescue_count(), 1)  # left intact — a heuristic install never recovers
 
