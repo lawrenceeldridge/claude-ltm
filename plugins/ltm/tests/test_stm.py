@@ -138,6 +138,24 @@ class StmTierTests(unittest.TestCase):
         texts = {r["text"] for r in self.store.stm_rows(self.project["key"])}
         self.assertEqual(texts, {"alpha fact"})
 
+    def test_viewer_queries_by_tier_status_and_work(self):
+        # Backs the viewer's STM / LTM / RnR tabs.
+        pk = self.project["key"]
+        self._add("alpha")  # stm
+        self._add("beta")
+        self.store.promote(self._fid("beta"))  # ltm
+        self._add("gamma")
+        self.store.set_status([self._fid("gamma")], "pruned")  # archived
+        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key=pk)
+
+        def texts(groups):
+            return {rows[0]["text"] for rows in groups}
+
+        self.assertEqual(texts(self.store.list_observations(pk, tier="stm", active=True)), {"alpha"})
+        self.assertEqual(texts(self.store.list_observations(pk, tier="ltm", active=True)), {"beta"})
+        self.assertEqual(texts(self.store.list_observations(pk, active=False)), {"gamma"})
+        self.assertEqual([r["stage"] for r in self.store.work_items(pk)], ["rescue"])
+
     # --- displacement (opt-in, reversible) ---
 
     def test_displace_stm_disabled_by_default(self):

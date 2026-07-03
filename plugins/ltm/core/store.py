@@ -596,29 +596,51 @@ class Store:
             "SELECT * FROM facts WHERE project_key = ? AND status = 'active'", (project_key,)
         ).fetchall()
 
-    def list_observations(self, project_key: str, limit: int | None = None, offset: int = 0) -> list[list[sqlite3.Row]]:
+    def list_observations(
+        self,
+        project_key: str,
+        limit: int | None = None,
+        offset: int = 0,
+        tier: str | None = None,
+        active: bool | None = None,
+    ) -> list[list[sqlite3.Row]]:
         """Facts grouped into observation cards, newest group first, paginated by group.
 
         A group is the facts sharing an observation_id (falling back to the fact's own
-        id for ungrouped rows), returned as an ordered list of its fact rows.
+        id for ungrouped rows), returned as an ordered list of its fact rows. Optional
+        filters: ``tier`` ('stm'/'ltm') and ``active`` (True = status='active' only,
+        False = archived only) — used by the viewer's STM / LTM / RnR tabs.
         """
         grp = "COALESCE(observation_id, id)"
-        sql = (
-            f"SELECT {grp} AS grp, MAX(created_at) AS ts, MAX(rowid) AS rid "
-            "FROM facts WHERE project_key = ? GROUP BY grp ORDER BY ts DESC, rid DESC"
-        )
-        params: list = [project_key]
+        cond = "project_key = ?"
+        cparams: list = [project_key]
+        if tier is not None:
+            cond += " AND tier = ?"
+            cparams.append(tier)
+        if active is True:
+            cond += " AND status = 'active'"
+        elif active is False:
+            cond += " AND status != 'active'"
+        sql = f"SELECT {grp} AS grp, MAX(created_at) AS ts, MAX(rowid) AS rid FROM facts WHERE {cond} GROUP BY grp ORDER BY ts DESC, rid DESC"
+        params = list(cparams)
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params += [limit, offset]
         groups = self.db.execute(sql, params).fetchall()
         return [
             self.db.execute(
-                f"SELECT * FROM facts WHERE project_key = ? AND {grp} = ? ORDER BY rowid ASC",
-                (project_key, row["grp"]),
+                f"SELECT * FROM facts WHERE {cond} AND {grp} = ? ORDER BY rowid ASC",
+                (*cparams, row["grp"]),
             ).fetchall()
             for row in groups
         ]
+
+    def work_items(self, project_key: str, limit: int = 200) -> list[sqlite3.Row]:
+        """Work-queue rows for a project (all stages/statuses), newest first — the RnR view."""
+        return self.db.execute(
+            "SELECT * FROM work_queue WHERE project_key = ? ORDER BY enqueued_at DESC, rowid DESC LIMIT ?",
+            (project_key, limit),
+        ).fetchall()
 
     def active_rows(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM facts WHERE status = 'active'").fetchall()
