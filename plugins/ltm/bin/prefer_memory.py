@@ -2,28 +2,55 @@
 """PreToolUse guard — steer toward memory/index before a broad search or a raw code read.
 
 Two behaviours, both fail-open:
-  * Grep / Glob / Task — a once-per-session reminder to consult recall / search_code /
-    search_docs before scanning.
+  * Grep / Glob / Task / search-y Bash — a once-per-session reminder to consult recall /
+    search_code / search_docs before scanning. A Bash command counts only when it's a real
+    filesystem search (rg/ag/ack, grep -r, find -name), not a stdin pipe filter — so the
+    common ``… | grep`` case is never touched. This closes the hole where searching via
+    Bash bypassed the guard entirely.
   * Read of a large code file (>=4KB, no offset/limit) — suggest search_code + get_symbol
     instead of pulling the whole file.
 
 Strength is set by ``LTM_ENFORCE`` (default ``advisory``): ``off`` disables the guard;
 ``advisory`` only injects reminders and never blocks; ``strict`` turns the large-code-Read
-case into a real ``deny`` — but only for files actually in the index, and never for
-offset/limit reads, so an agent can still do a targeted pre-edit read. Pure stdlib on the
-common path; the strict "is it indexed?" check lazily opens the store only under ``strict``.
+case (indexed files only) and the Grep/Glob/Bash-search case (until memory was consulted)
+into real ``deny``s — never for offset/limit reads, so a targeted pre-edit read still flows.
+Pure stdlib on the common path; the strict "is it indexed?" check lazily opens the store.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 _CODE_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _MIN_READ_BYTES = 4096
+
+# A Bash command that is really a filesystem/code search — the Bash equivalent of the
+# Grep/Glob tools, which would otherwise slip past this guard entirely. Deliberately
+# narrow (dedicated search tools, or recursive grep, or find-by-name) so ordinary pipe
+# filters like `ps aux | grep foo` are NOT flagged.
+_BASH_SEARCH_TOOL = re.compile(r"(?:^|[|&;]\s*|\s)(?:rg|ag|ack)\b")
+_BASH_GREP_RECURSIVE = re.compile(r"\be?grep\b")
+_BASH_GREP_FLAGS = re.compile(r"(?:-[A-Za-z]*[rR]\b|--include|--exclude)")
+_BASH_FIND = re.compile(r"\bfind\b")
+_BASH_FIND_FLAGS = re.compile(r"-(?:i?name|i?path|regex)\b")
+
+
+def _is_bash_search(command: str) -> bool:
+    """True when a Bash command scans the filesystem for code/content (rg/ag/ack, grep -r,
+    find -name) — not a stdin pipe filter."""
+    if not command:
+        return False
+    if _BASH_SEARCH_TOOL.search(command):
+        return True
+    if _BASH_GREP_RECURSIVE.search(command) and _BASH_GREP_FLAGS.search(command):
+        return True
+    return bool(_BASH_FIND.search(command) and _BASH_FIND_FLAGS.search(command))
+
 
 _SEARCH_REMINDER = (
     "claude-ltm memory + index are cheaper than a broad search (measured ~2/3 fewer tokens on "
@@ -127,13 +154,19 @@ def main() -> int:
                     _emit_context(_READ_ADVICE)
         return 0
 
-    # Grep / Glob / Task — enforce cheap-check-first ordering.
+    # Grep / Glob / search-y Bash / Task — enforce cheap-check-first ordering. Bash that
+    # isn't a filesystem search (the common case) is none of our business — return fast.
+    is_bash_search = tool == "Bash" and _is_bash_search(tool_input.get("command", ""))
+    if tool == "Bash" and not is_bash_search:
+        return 0
+
     consulted = _consulted(session)
-    if tool in ("Grep", "Glob") and not consulted and enforce == "strict":
+    if (tool in ("Grep", "Glob") or is_bash_search) and not consulted and enforce == "strict":
         _emit_deny(
             "Consult claude-ltm first — call `recall` and `search_code` / `search_docs` before a broad "
-            "search. Once you've checked memory/index, Grep/Glob flow freely (widen when they come back "
-            "weak or empty). Set LTM_ENFORCE=advisory to make this a reminder instead of a gate."
+            "search (Grep/Glob, or grep/rg/find via Bash). Once you've checked memory/index, searches "
+            "flow freely (widen when they come back weak or empty). Set LTM_ENFORCE=advisory to make "
+            "this a reminder instead of a gate."
         )
         return 0
     if not consulted and _once(session, "prefer"):  # advisory nudge, until memory is consulted

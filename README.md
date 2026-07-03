@@ -76,8 +76,12 @@ enforce *ordering* rather than nagging blindly.
 | `LTM_ENFORCE` | Behaviour |
 |---|---|
 | `off` | Guard disabled. |
-| `advisory` *(default)* | Reminders only, never blocks. One nudge per session to check memory/index before Grep/Glob; a nudge before reading a large code file whole. |
-| `strict` | Grep/Glob are **denied** until memory has been consulted this session (one `recall` — even an empty one — unlocks them). Reading a large **indexed** code file whole is denied (a `search_code` + `get_symbol`, or an `offset`/`limit` pre-edit peek, is expected instead). |
+| `advisory` *(default)* | Reminders only, never blocks. One nudge per session to check memory/index before a search — Grep/Glob **or a filesystem search via Bash** (`rg`, `grep -r`, `find -name`); a nudge before reading a large code file whole. |
+| `strict` | Grep/Glob **and Bash searches** (`rg`/`grep -r`/`find -name` — not `… \| grep` pipe filters) are **denied** until memory has been consulted this session (one `recall` — even an empty one — unlocks them). Reading a large **indexed** code file whole is denied (a `search_code` + `get_symbol`, or an `offset`/`limit` pre-edit peek, is expected instead). |
+
+Independently, the code/docs **index** is surfaced *passively* on every prompt (`index_top_k`),
+so relevant symbols/sections appear even when the model never calls `search_code` — see
+[Configuration](#configuration).
 
 The gate is deliberately cheap to satisfy: a single `recall` call clears it for the
 rest of the session. It's fail-open — any error in the hook lets the tool through.
@@ -187,6 +191,9 @@ or `LTM_*` env vars for standalone use:
 | `min_sim` | `0.12` | similarity threshold to inject |
 | `core_size` | `5` | stable facts injected at session start (0 disables) |
 | `max_chars` | `800` | hard cap on injected characters (token guard) |
+| `index_top_k` | `2` | code/docs **index** hits injected per prompt (0 disables) — FTS-prefiltered then cosine-reranked, so it's hot-path-cheap regardless of index size |
+| `index_min_sim` | `0.18` | similarity threshold for a passive index hit |
+| `index_max_chars` | `400` | hard cap on the passive index block per prompt |
 | `cross_project` | `false` | fall back to other projects when in-project recall is weak |
 | `half_life_days` | `30` | recency half-life; lower = forgets faster |
 | `supersede_threshold` | `0.85` | new-fact similarity that retires an older one (1.0 disables) |
@@ -328,7 +335,7 @@ collapses them into a single project. The nearest `.ltm-root` ancestor wins.
 
 ## Status
 
-Working end to end (206 tests, 10 skipped). Defaults are local-first and
+Working end to end (216 tests, 10 skipped). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for

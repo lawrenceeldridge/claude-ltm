@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bin"))
 
+from dataclasses import replace  # noqa: E402
+
 from core.config import get_config  # noqa: E402
 from core.index import treesitter_symbols  # noqa: E402
 from core.index.chunking import make_slug, split_markdown  # noqa: E402
@@ -26,6 +28,7 @@ from core.index.code_symbols import extract_code_symbols, extract_symbols  # noq
 from core.index.index_recall import get_chunk, get_outline, search_index  # noqa: E402
 from core.index.indexer import index_file, index_project, tree_signature  # noqa: E402
 from core.ports.embedding import HashEmbedding  # noqa: E402
+from core.service import index_prompt_block  # noqa: E402
 from core.store import _SCHEMA_VERSION, Store  # noqa: E402
 
 
@@ -468,6 +471,50 @@ class TypeScriptIndexingTests(unittest.TestCase):
         c = get_chunk(self.store, self.project, "Button")
         self.assertTrue(c["found"])
         self.assertEqual(c["freshness"], "fresh")
+
+
+class IndexInjectionTests(unittest.TestCase):
+    """service.index_prompt_block — the passive per-prompt index nudge (hash embedder)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.cfg = get_config()
+        self.store = Store(self.cfg.db_path)
+        self.embedder = HashEmbedding(dim=self.cfg.dim)
+        self.proj = {"key": "p", "path": self.tmp.name, "label": "p"}
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+
+    def _index(self, name: str, body: str) -> None:
+        p = Path(self.tmp.name) / name
+        p.write_text(body)
+        index_file(self.store, self.embedder, self.cfg, self.proj, str(p))
+
+    def test_injects_relevant_indexed_symbol(self):
+        self._index("auth.py", "def authenticate_user(token):\n    return verify(token)\n")
+        cfg = replace(self.cfg, index_min_sim=-1.0)  # isolate FTS+render from threshold tuning
+        block = index_prompt_block(self.store, self.embedder, cfg, self.proj, "authenticate_user token")
+        self.assertIn("auth.py", block)
+        self.assertIn("search_code", block)  # the block points at the MCP tools
+
+    def test_gate_filters_below_threshold(self):
+        self._index("auth.py", "def authenticate_user(token): return 1\n")
+        cfg = replace(self.cfg, index_min_sim=2.0)  # impossible cosine → nothing passes
+        self.assertEqual(index_prompt_block(self.store, self.embedder, cfg, self.proj, "authenticate_user"), "")
+
+    def test_disabled_when_index_top_k_zero(self):
+        self._index("auth.py", "def authenticate_user(token): return 1\n")
+        cfg = replace(self.cfg, index_top_k=0, index_min_sim=-1.0)
+        self.assertEqual(index_prompt_block(self.store, self.embedder, cfg, self.proj, "authenticate_user"), "")
+
+    def test_empty_when_no_keyword_match(self):
+        self._index("auth.py", "def authenticate_user(token): return 1\n")
+        cfg = replace(self.cfg, index_min_sim=-1.0)
+        self.assertEqual(index_prompt_block(self.store, self.embedder, cfg, self.proj, "zzqqxx_nomatch"), "")
 
 
 if __name__ == "__main__":
