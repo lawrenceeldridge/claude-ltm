@@ -88,8 +88,10 @@ def _run_worker(payload_path: str) -> None:
         session_id = payload.get("session_id", "")
         if cfg.bus == "nats":
             from core.nats_provision import ensure_nats
+            from core.provision import ensure_nats_py_in_venv
 
             ensure_nats(cfg)  # best-effort, off the hot path; the bus fails open to inproc
+            ensure_nats_py_in_venv(cfg.data_dir)  # best-effort; fails open to hash if nats-py unavailable
         embedder = get_embedder(cfg)
         store = Store(cfg.db_path)
         capture_transcript_incremental(store, embedder, cfg, project, session_id, transcript_path)
