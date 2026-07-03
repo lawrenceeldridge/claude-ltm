@@ -30,6 +30,16 @@ def _fts_match_expr(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in _FTS_TOKEN.findall(query.lower()))
 
 
+def _now(now: float | None) -> float:
+    """Resolve an optional caller-supplied timestamp to a concrete one (test seam)."""
+    return now if now is not None else time.time()
+
+
+def _placeholders(seq) -> str:
+    """`?, ?, …` for an IN (...) clause sized to ``seq``."""
+    return ",".join("?" for _ in seq)
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
   id            TEXT PRIMARY KEY,
@@ -364,7 +374,7 @@ class Store:
         """
         self.db.execute(
             "UPDATE facts SET frequency = frequency + 1, last_seen = ?, status = 'active' WHERE id = ?",
-            (now if now is not None else time.time(), fact_id),
+            (_now(now), fact_id),
         )
         self.db.commit()
         row = self.db.execute("SELECT frequency FROM facts WHERE id = ?", (fact_id,)).fetchone()
@@ -374,7 +384,7 @@ class Store:
         """Rehearsal transfer — move a short-term fact into the long-term store."""
         self.db.execute(
             "UPDATE facts SET tier = 'ltm', last_seen = ? WHERE id = ? AND tier = 'stm'",
-            (now if now is not None else time.time(), fact_id),
+            (_now(now), fact_id),
         )
         self.db.commit()
 
@@ -404,7 +414,7 @@ class Store:
         ids = [r["id"] for r in overflow]
         if not ids:
             return 0
-        placeholders = ",".join("?" for _ in ids)
+        placeholders = _placeholders(ids)
         cur = self.db.execute(
             f"UPDATE facts SET status = 'displaced' WHERE id IN ({placeholders})",
             ids,
@@ -421,8 +431,8 @@ class Store:
         """
         if not fact_ids:
             return 0
-        stamp = now if now is not None else time.time()
-        placeholders = ",".join("?" for _ in fact_ids)
+        stamp = _now(now)
+        placeholders = _placeholders(fact_ids)
         cur = self.db.execute(
             f"UPDATE facts SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
             (stamp, *fact_ids),
@@ -434,7 +444,7 @@ class Store:
         """Retroactive interference — archive facts replaced by a newer one."""
         if not fact_ids:
             return 0
-        placeholders = ",".join("?" for _ in fact_ids)
+        placeholders = _placeholders(fact_ids)
         cur = self.db.execute(
             f"UPDATE facts SET status = 'superseded', superseded_by = ? "
             f"WHERE id IN ({placeholders}) AND status = 'active'",
@@ -653,7 +663,7 @@ class Store:
             self.db.execute(
                 "INSERT INTO recall_events (ts, project_key, query, returned, top_sim, confidence, verdict) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (now if now is not None else time.time(), project_key, query, returned, top_sim, confidence, verdict),
+                (_now(now), project_key, query, returned, top_sim, confidence, verdict),
             )
             self.db.commit()
         except sqlite3.Error:
@@ -682,7 +692,7 @@ class Store:
         self.db.execute(
             "INSERT INTO capture_cursors (cursor_key, offset, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(cursor_key) DO UPDATE SET offset = excluded.offset, updated_at = excluded.updated_at",
-            (cursor_key, offset, now if now is not None else time.time()),
+            (cursor_key, offset, _now(now)),
         )
         self.db.commit()
 
@@ -720,7 +730,7 @@ class Store:
         removed or renamed; the whole swap is one transaction so a crash can't leave a
         half-indexed file. Returns the number of chunks written.
         """
-        stamp = now if now is not None else time.time()
+        stamp = _now(now)
         with self.db:
             self.db.execute("DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path))
             self.db.executemany(
@@ -843,7 +853,7 @@ class Store:
         self.db.execute(
             "INSERT INTO pending_redistill (project_key, session_id, text, fact_ids, attempts, created_at) "
             "VALUES (?, ?, ?, ?, 0, ?)",
-            (project_key, session_id, text, json.dumps(fact_ids), now if now is not None else time.time()),
+            (project_key, session_id, text, json.dumps(fact_ids), _now(now)),
         )
         self.db.commit()
 
@@ -884,7 +894,7 @@ class Store:
             "(msg_id, stage, project_key, session_id, ref, payload, status, attempts, "
             " next_retry_at, lease_owner, lease_expires, enqueued_at) "
             "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, NULL, 0, ?)",
-            (msg_id, stage, project_key, session_id, ref, payload, now if now is not None else time.time()),
+            (msg_id, stage, project_key, session_id, ref, payload, _now(now)),
         )
         self.db.commit()
         return cur.rowcount > 0
@@ -898,7 +908,7 @@ class Store:
         interrupted worker's items — crash recovery). Sets a fresh lease and bumps
         ``attempts`` so the delivery count survives across workers.
         """
-        now = now if now is not None else time.time()
+        now = _now(now)
         rows = self.db.execute(
             "SELECT * FROM work_queue WHERE stage = ? AND next_retry_at <= ? AND "
             "(status = 'pending' OR (status = 'in_progress' AND lease_expires < ?)) "
@@ -921,7 +931,7 @@ class Store:
 
     def nak_work(self, msg_id: str, delay: float = 0.0, now: float | None = None) -> None:
         """Return work for retry after ``delay`` seconds; clears the lease."""
-        now = now if now is not None else time.time()
+        now = _now(now)
         self.db.execute(
             "UPDATE work_queue SET status = 'pending', next_retry_at = ?, lease_owner = NULL, lease_expires = 0 "
             "WHERE msg_id = ?",
@@ -939,7 +949,7 @@ class Store:
 
     def reclaim_expired(self, now: float | None = None) -> int:
         """Return interrupted (expired-lease) in_progress items to pending. Crash recovery."""
-        now = now if now is not None else time.time()
+        now = _now(now)
         cur = self.db.execute(
             "UPDATE work_queue SET status = 'pending', lease_owner = NULL, lease_expires = 0 "
             "WHERE status = 'in_progress' AND lease_expires < ?",
@@ -964,7 +974,7 @@ class Store:
         """Hard-delete facts by id (FTS stays in sync via the delete trigger). Used by recovery."""
         if not fact_ids:
             return 0
-        placeholders = ",".join("?" for _ in fact_ids)
+        placeholders = _placeholders(fact_ids)
         cur = self.db.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", tuple(fact_ids))
         self.db.commit()
         return cur.rowcount
