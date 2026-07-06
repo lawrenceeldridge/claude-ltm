@@ -176,6 +176,17 @@ class Distiller(ABC):
         """A single session-level summary fact, or None if unsupported (heuristic)."""
         return None
 
+    def merge_cluster(self, texts: list[str]) -> str | None:
+        """Merge near-duplicate fact texts into one abstracted fact for the integrate stage.
+
+        Returns the merged fact text, or ``None`` to keep the cluster separate (an LLM
+        "these are actually distinct" veto). Default ``None`` — the heuristic distiller has
+        no merge ability, so a heuristic-only install uses the blunt cosine floor instead.
+        LLM implementations let exceptions propagate so the caller can distinguish an error
+        (fail-open) from a deliberate veto.
+        """
+        return None
+
 
 class HeuristicDistiller(Distiller):
     def distill(self, text: str, existing: list[tuple[str, str]]) -> list[DistilledFact]:
@@ -384,6 +395,43 @@ _SUMMARY_SECTIONS = (
 )
 
 
+_MERGE_PROMPT = """You are consolidating long-term memory for a coding assistant. The facts
+below were flagged as near-duplicates by vector similarity.
+
+If they express the SAME underlying fact, write ONE concise, self-contained fact in present
+tense that captures their combined meaning — prefer the most specific, up-to-date version and
+keep any distinct detail. If they are actually DISTINCT facts that should stay separate,
+answer with "DISTINCT".
+
+Output ONLY a JSON object: {{"merged": "<the single merged fact, or the word DISTINCT>"}}.
+
+Facts:
+{facts}
+"""
+
+
+def _build_merge_prompt(texts: list[str]) -> str:
+    return _MERGE_PROMPT.format(facts="\n".join(f"- {t}" for t in texts))
+
+
+def parse_merge(output: str) -> str | None:
+    """Pull ``{"merged": "..."}`` from an LLM response. Returns the merged text, or ``None``
+    for a DISTINCT verdict / empty / unparseable output."""
+    start, end = output.find("{"), output.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        obj = json.loads(output[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    merged = str(obj.get("merged", "")).strip()
+    if not merged or merged.upper() == "DISTINCT" or merged.lower() in _NON_IDS:
+        return None
+    return merged
+
+
 def parse_summary(output: str) -> DistilledFact | None:
     start, end = output.find("{"), output.rfind("}")
     if start == -1 or end <= start:
@@ -433,6 +481,9 @@ class ClaudeCliDistiller(Distiller):
             return parse_summary(self._complete(_build_summary_prompt(text)))
         except Exception:
             return None
+
+    def merge_cluster(self, texts: list[str]) -> str | None:
+        return parse_merge(self._complete(_build_merge_prompt(texts)))
 
 
 class HTTPDistiller(Distiller):
@@ -484,6 +535,14 @@ class HTTPDistiller(Distiller):
             return parse_summary(self._complete(_build_summary_prompt(text)))
         except Exception:
             return None
+
+    def merge_cluster(self, texts: list[str]) -> str | None:
+        return parse_merge(self._complete(_build_merge_prompt(texts)))
+
+
+# Distiller backends that call out to an LLM — so they can transiently fail (and are the
+# ones that support merge_cluster). Shared by the capture rescue path and the integrate tier.
+LLM_DISTILLERS = frozenset({"claude", "llm", "ollama", "http", "openai"})
 
 
 def get_distiller(cfg) -> Distiller:

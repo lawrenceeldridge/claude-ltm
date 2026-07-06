@@ -17,7 +17,7 @@ from core.config import Config
 from core.domain.confidence import compute_confidence
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
-from core.ports.distill import DistilledFact, get_distiller
+from core.ports.distill import LLM_DISTILLERS, DistilledFact, get_distiller
 from core.ports.embedding import EmbeddingGateway
 from core.ports.membus import WorkItem, get_bus
 from core.project import Project
@@ -109,11 +109,6 @@ def add_facts(
     return add_records(store, embedder, cfg, project, session_id, [DistilledFact(f) for f in facts], kind)
 
 
-# Distillers that call an LLM (and so can transiently fail to the heuristic). A
-# heuristic-only install never recovers, so its degraded output is not queued.
-_LLM_DISTILLERS = {"claude", "llm", "ollama", "http", "openai"}
-
-
 def capture_text(
     store: Store,
     embedder: EmbeddingGateway,
@@ -129,7 +124,7 @@ def capture_text(
     # If an LLM distiller degraded to the heuristic (unreachable / timed out), publish
     # the raw delta to the durable 'rescue' queue so a later healthy session re-distils
     # it and replaces these facts. Idempotent on the delta's content hash.
-    if records and cfg.distiller in _LLM_DISTILLERS and all(r.degraded for r in records):
+    if records and cfg.distiller in LLM_DISTILLERS and all(r.degraded for r in records):
         fact_ids = [store.fact_id(project["key"], r.text) for r in records]
         payload = json.dumps(
             {"text": text, "fact_ids": fact_ids, "session_id": session_id, "project_key": project["key"]}
@@ -160,7 +155,7 @@ def rescue(store: Store, embedder: EmbeddingGateway, cfg: Config, *, limit: int 
     recover). The queue is global, so a healthy session rescues deltas any session
     parked — each work item carries its own project key.
     """
-    if cfg.distiller not in _LLM_DISTILLERS:
+    if cfg.distiller not in LLM_DISTILLERS:
         return 0
     bus = get_bus(cfg, store)
     try:

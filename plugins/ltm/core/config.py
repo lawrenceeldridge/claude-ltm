@@ -90,8 +90,9 @@ class Config:
     nats_stream: str
     nats_provision: str
     nats_version: str
-    retention_keep_max: int
-    prune_threshold: float
+    integrate_threshold: float
+    refine_keep_max: int
+    refine_prune_percentile: float
     purge_horizon_days: float
     distiller: str
     distiller_cmd: str
@@ -152,10 +153,11 @@ def get_config() -> Config:
         # docker = run the official image; off = never auto-start (bring your own).
         nats_provision=_opt("nats_provision", "binary"),
         nats_version=_opt("nats_version", "2.10.22"),
-        # Consolidation (sleep pass). All default-off: pruning is retrieval-affecting
-        # and stays disabled until the retention weights are `ltm eval`-tuned.
-        retention_keep_max=int(_num(_opt("retention_keep_max", "0"), 0)),
-        prune_threshold=_num(_opt("prune_threshold", "0"), 0),
+        # Consolidation (sleep pass). All default-off: integration/pruning are
+        # retrieval-affecting and stay disabled until `ltm eval`-tuned.
+        integrate_threshold=_num(_opt("integrate_threshold", "0"), 0),
+        refine_keep_max=int(_num(_opt("refine_keep_max", "0"), 0)),
+        refine_prune_percentile=_num(_opt("refine_prune_percentile", "0"), 0),
         purge_horizon_days=_num(_opt("purge_horizon_days", "0"), 0),
         distiller=_opt("distiller", "claude"),
         distiller_cmd=_opt("distiller_cmd", "claude"),

@@ -128,9 +128,9 @@ PAGE = """<!doctype html>
 <header>
   <h1>claude-ltm</h1>
   <div id="views">
-    <button class="vtoggle active" data-view="stm" title="Short-term memory (fresh, awaiting rehearsal)">stm</button>
-    <button class="vtoggle" data-view="ltm" title="Long-term memory (consolidated)">ltm</button>
-    <button class="vtoggle" data-view="rnr" title="Refine &amp; rescue: work queue + archived/forgotten facts">rnr</button>
+    <button class="vtoggle active" data-view="stm" title="Short-term memory (fresh — promotes to long-term on rehearsal or recall)">stm</button>
+    <button class="vtoggle" data-view="ltm" title="Long-term memory (consolidated — promoted by rehearsal or recall)">ltm</button>
+    <button class="vtoggle" data-view="rnr" title="Consolidation &amp; rescue: work queue + archived facts (superseded / displaced / merged / pruned / expired)">rnr</button>
     <button class="vtoggle" data-view="index" title="Code &amp; docs index">index</button>
   </div>
   <select id="project"></select>
@@ -261,8 +261,8 @@ function qItemHTML(q) {
     + `<span class="qmeta">delivery ${q.attempts} · ${when}</span></div>`
     + `<div class="cinner"><div class="prompt">${esc(body)}</div></div></div>`;
 }
-// Refine & Rescue: the durable queue (rescue backlog + dead-letter) and the facts
-// consolidation has archived (superseded / displaced / pruned / expired).
+// Consolidation & Rescue: the durable queue (rescue backlog + dead-letter) and the facts
+// consolidation has archived (superseded / displaced / merged / pruned / expired).
 async function reloadRnr() {
   mode = 'search'; exhausted = true;   // no infinite scroll
   const pk = $('#project').value;
@@ -272,7 +272,7 @@ async function reloadRnr() {
   const qHTML = queue.length ? queue.map(qItemHTML).join('')
     : `<div class="empty">Queue empty — nothing awaiting re-distill or dead-lettered.</div>`;
   const aHTML = archived.length ? archived.map(c => cardHTML(c, false)).join('')
-    : `<div class="empty">Nothing archived yet — refine/supersession/expiry haven't retired any facts.</div>`;
+    : `<div class="empty">Nothing archived yet — supersession/displacement/merge/refine/expiry haven't retired any facts.</div>`;
   $('#list').innerHTML =
     `<h3 class="sec">Rescue queue · ${queue.length}</h3>${qHTML}`
     + `<h3 class="sec">Archived / forgotten · ${archived.length}</h3>${aHTML}`;

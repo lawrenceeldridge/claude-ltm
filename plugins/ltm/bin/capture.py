@@ -112,7 +112,7 @@ def _run_worker(payload_path: str) -> None:
             try:
                 from core.consolidation import consolidate
 
-                consolidate(store, cfg, project)
+                consolidate(store, cfg, project, embedder=embedder)
             except Exception:
                 pass
         store.close()

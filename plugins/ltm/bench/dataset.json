@@ -66,5 +66,22 @@
     {"q": "how do we run dependencies for local development", "relevant": [32]},
     {"q": "what quality gates run in continuous integration", "relevant": [18, 27]},
     {"q": "what kinds of automated testing does the project have", "relevant": [6, 30]}
-  ]
+  ],
+  "stm_scenario": {
+    "description": "Measures the stm_recall_weight lever end-to-end. Each fresh STM fact (odd index) has an older LTM competitor (the preceding even index) that shares the query's vocabulary. As stm_recall_weight falls from 1.0 toward 0, the STM gold facts must lose rank to their LTM competitors — a monotonic demonstration that the tier lever is measurable. ltm_indices marks the facts promoted to the long-term tier; the rest stay short-term. relevant = indices into stm_scenario.facts.",
+    "facts": [
+      "The service deploys to AWS Lambda using the Serverless Framework.",
+      "The service now deploys to Google Cloud Run using containers.",
+      "The primary datastore is PostgreSQL hosted on Amazon RDS.",
+      "The primary datastore is now CockroachDB for multi-region writes.",
+      "Background jobs run on a Celery worker pool backed by Redis.",
+      "Background jobs now run on Temporal durable workflows."
+    ],
+    "ltm_indices": [0, 2, 4],
+    "queries": [
+      {"q": "where does the service deploy", "relevant": [1]},
+      {"q": "what is the primary datastore", "relevant": [3]},
+      {"q": "how do background jobs run", "relevant": [5]}
+    ]
+  }
 }

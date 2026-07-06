@@ -17,23 +17,27 @@ Every decision below optimises one or both.
 Capture and recall have opposite performance profiles, so they are split:
 
 - **Write side (capture)** — heavy, batch, latency-tolerant. Runs detached at
-  `SessionEnd` / `PreCompact`. Zero interactive-token cost.
+  `Stop` / `SessionEnd` / `PreCompact`. Zero interactive-token cost.
 - **Read side (recall)** — tiny, hot-path, token- and latency-critical.
 
 ```
 UserPromptSubmit ─► recall (embed → rank → gated inject)      ← hot path, tail of context
 SessionStart     ─► core inject (small, stable)               ← joins cached prefix
-SessionEnd/PreCompact ─► spawn detached capture worker        ← fire & forget
-                              │ distil → embed → persist
+Stop/SessionEnd/PreCompact ─► spawn detached capture worker   ← fire & forget
+                              │ distil → embed → persist (tier=stm)
+                              │ checkpoint: consolidate  (replay → displace → refine → purge)
                               ▼
               ${CLAUDE_PLUGIN_DATA}/memory.db   ◄── read-only ── localhost viewer
-              (facts + int8/binary embeddings, rows tagged by project)
+              (facts + int8/binary embeddings, tier + status, rows tagged by project)
+                              ▲
+       durable MemoryBus (inproc SQLite / opt-in NATS) ─► rescue: re-distil degraded deltas
 ```
 
-**Planned (not yet built):** detached capture is designed to gain a durable **Command
-queue** (`MemoryBus`) so a dropped connection or an `LTM_DISTILLER` outage retries rather
-than degrades — opt-in, behind a Separated Interface, default `inproc` (stdlib SQLite
-`work_queue`), opt-in `nats` (JetStream), **fail-open** to `inproc`, never on the recall
+**Durable capture queue (built).** Detached capture publishes work items to a durable
+**Command queue** (`MemoryBus`) so a dropped connection or an `LTM_DISTILLER` outage
+retries rather than degrades — opt-in backend, behind a Separated Interface, default
+`inproc` (stdlib SQLite `work_queue` with retry / backoff / dead-letter / lease-recovery),
+opt-in `nats` (JetStream, auto-provisioned), **fail-open** to `inproc`, never on the recall
 hot path. It is a Command queue (one handler, retry/dead-letter), **not** an Event bus.
 See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
@@ -43,10 +47,11 @@ See the [`stm-ltm-membus` design](docs/generated/designs/stm-ltm-consolidation-a
 |---|---|---|
 | Overall shape | CQRS + Hexagonal (Ports & Adapters) | whole plugin |
 | Capture pipeline | Command/Handler, idempotent per fact | `core/service.py` |
-| Distil/rank/quantise | Functional Core / Imperative Shell | `core/distill.py`, `recall.py`, `quantize.py` |
-| Memory access | Repository over Data Mapper (never Active Record) | `core/store.py` |
+| Distil/rank/quantise/consolidate | Functional Core / Imperative Shell | `core/distill.py`, `recall/`, `domain/quantize.py`, `consolidation/{replay,refine,scoring}.py` |
+| Memory access + STM/LTM tiers | Repository over Data Mapper (never Active Record); tiers = a `tier` column + `Store` methods, **not** a second Repository | `core/store.py` |
 | Query params | Query Object | `core/recall.py::search` |
-| Embedding provider | Gateway + Separated Interface | `core/embedding.py`, `adapters/` |
+| Embedding provider | Gateway + Separated Interface | `core/ports/embedding.py`, `core/adapters/` |
+| Durable per-memory work (rescue/consolidate) | Command queue behind a Separated Interface — **not** Events; default stdlib `inproc`, opt-in NATS Gateway, fail-open | `core/ports/membus.py`, `core/adapters/{inproc,nats}_bus.py` |
 | Injected payload | DTO (deliberately one line/fact) | `core/recall.py::render_block` |
 | Empty recall | Special Case / Null Object (inject nothing) | `render_block` returns `""` |
 | Wiring | Composition Root | `bin/*` entry points |
@@ -142,8 +147,8 @@ memory research are layered on top, split cleanly by responsibility:
 
 | Concept | Implementation | Where |
 |---|---|---|
-| Forgetting curve | exponential recency decay `e^(-λt)` (λ from `half_life_days`) | `core/scoring.py` |
-| Consolidation | frequency boost — a fact seen again reinforces (freq++, recency refreshed) instead of duplicating | `store.reinforce`, `service.add_facts` |
+| Forgetting curve | exponential recency decay `e^(-λt)` (λ from `half_life_days`) | `core/domain/scoring.py` |
+| Rehearsal (Atkinson–Shiffrin) | frequency boost — a fact seen again reinforces (freq++, recency refreshed) instead of duplicating, and transfers STM→LTM once rehearsed past `promote_after_freq` | `store.reinforce`, `store.promote`, `service.add_records` |
 | Context-dependent retrieval | similarity gate (`min_sim`) suppresses facts whose cue doesn't match | `recall.search` |
 | Retroactive interference | **hard supersession** — a near-identical newer fact archives older ones (`status='superseded'`, filtered at SQL) | `store.supersede`, `service._find_superseded` |
 
@@ -164,13 +169,102 @@ is Y") but not semantically-conflicting rewrites that share little vocabulary
 entity/attribute extraction — the LLM-distiller drop-in, which can emit explicit
 `supersedes` links.
 
-**Planned extension (not yet built) — explicit STM/LTM tiers + a "sleep" pass.** The
-lifecycle above implements the multi-store model's *control processes* inline. A designed
-(not yet implemented) extension makes them explicit: a capacity-bounded **short-term
-store** that promotes to long-term on rehearsal, an offline **consolidation pass**
-(replay / refine / rescue, mirroring active systems consolidation + REM), and an
-importance-weighted **forgetting model** (SHY-style global downscale + prune) that keeps
-the active set small enough that brute-force search stays viable. Full design:
+### Multi-store tiers + the "sleep" pass (built)
+
+The lifecycle above is the *inline, read-side* control process. Layered on top are two
+memory-research models, made explicit on the *write side*, off the hot path.
+
+**Atkinson–Shiffrin multi-store model** — memory is staged, not flat:
+
+| Store / process | claude-ltm |
+|---|---|
+| Sensory register (raw, fleeting; *attention* selects) | transcript + incremental capture cursor; **distillation is the attention gate** (`core/transcript.py`, `core/distill.py`) |
+| Short-term store (fresh, capacity-bounded, *displaced* when full) | `tier='stm'` facts; `stm_capacity` bounds the active STM set, `store.displace_stm` sheds the weakest |
+| Rehearsal (STM→LTM transfer) | inline `store.reinforce` + `store.promote` (freq ≥ `promote_after_freq`); batch `replay` promotes STM that was *retrieved* |
+| Long-term store (durable, semantic) | `tier='ltm'` facts + decay + supersession + TTL |
+| Retrieval (LTM→use) | `recall.search` → `render_block` |
+
+**Two distinct promotion signals — kept separate, not unified.** STM→LTM promotion
+fires two ways, from two independently-supported mechanisms, and claude-ltm keeps both:
+
+- **Rehearsal (repetition)** — inline in `service.add_records`; a fact re-captured
+  enough times (`frequency ≥ promote_after_freq`) is promoted. This is Atkinson–Shiffrin
+  **maintenance rehearsal**.
+- **Retrieval (use)** — batch in `consolidation/replay.py`; any STM fact recalled at
+  least once is promoted. This is the **testing effect / retrieval-induced
+  consolidation** (Roediger & Karpicke), a *different* driver from repetition.
+
+Repetition and retrieval are complementary, so the two paths are deliberately **not**
+folded into one rule — each encodes a distinct memory mechanism.
+
+**Active Systems Consolidation Hypothesis + the Sequential Hypothesis** — an offline
+"sleep" pass (`core/consolidation/`) runs at session checkpoints (not every turn, like
+sleep itself), orchestrated by `consolidate()` and exposed as `ltm consolidate`. Its
+stages run in order `replay → displace → integrate → refine → purge`; each maps to a
+mechanism and is individually gated and reversible:
+
+- **Replay** (`replay.py`) — *active systems consolidation*: short-term facts that were
+  actually **recalled** graduate STM→LTM, mirroring selective, prioritized hippocampal
+  replay. Additive — it only moves a tier, never removes.
+- **Integrate** (`integrate.py`) — *REM-style integration*: cluster near-duplicate STM
+  facts by cosine and collapse each cluster to one (reversible `status='merged'`). Two
+  tiers, mirroring the embedding/distiller split: a stdlib **heuristic floor** (keep the
+  strongest survivor, archive the rest) and an opt-in **LLM tier** (the distiller either
+  *abstracts* the cluster into one merged fact or *vetoes* the merge as genuinely distinct;
+  fail-open to the floor). Runs before refine so the retention cut scores a deduplicated
+  set. Default-off (`integrate_threshold`) and `ltm eval`-gated.
+- **Refine** (`refine.py`) — *SHY-style forgetting*: score every active fact with a pure
+  **retention score** (`consolidation/scoring.py`) and archive the weakest. Two gated
+  knobs make the cut *relative*, so it self-limits as the store grows (the SHY "only the
+  relatively strong survive" property, achieved statelessly — no persisted running score):
+  `refine_keep_max` keeps the top-N (an absolute count → **idempotent**), and
+  `refine_prune_percentile` in `(0,1)` drops the weakest that fraction of the live active
+  set (`≥1` = an absolute score floor). This keeps the active set small enough that
+  brute-force search stays viable (see § the bytes layer / vector-store decision in the
+  STM-LTM design). Default-off and **`ltm eval`-gated** (it changes what is injected);
+  archival is a reversible status flip (`status='pruned'`), never a delete.
+- **Rescue** (`service.rescue`) — re-distils degraded deltas parked on the durable queue
+  when an LLM distiller was down, so a transient outage doesn't leave low-quality facts
+  behind. It needs the embedder + distiller and runs at the head of every capture, so it
+  is **co-located with the write path**, not in the checkpoint-only sleep pass.
+
+The **retention score** `R` is a single pure function over features the shell gathers
+(use, recency, salience, encoding depth, surprise, capture frequency) — the
+functional-core spine of refine, so it stays stdlib-testable and its weights are an
+eval-tuned retrieval lever, not a hand-tuned constant.
+
+**Where we deliberately diverge from the biology (honest limits).** The theories are a
+principled vocabulary, not a fidelity target — the divergences below are engineering
+choices, called out so the mapping isn't over-claimed:
+
+- **No distinct REM *phase* — but integration is built.** Consolidation now does all
+  three: **transfer** (replay), **transform** (integrate — dedup + LLM merge/abstraction),
+  and **forgetting** (refine). What we deliberately *don't* model is a separate REM sleep
+  *phase*: biologically, replay and SHY downscaling are NREM/slow-wave processes and
+  REM-style integration follows in a later cycle, whereas here all stages run in one
+  checkpoint pass. Entity-level conflict merge across disjoint vocabulary still relies on
+  the LLM (`merge_cluster` in integrate, and the `supersedes` path at capture), since the
+  cosine clustering only groups lexically/semantically near facts.
+- **Pipeline order is engineering-first, not phase-order.** We run
+  replay → displace → integrate → refine → purge so a fact about to be promoted leaves the STM
+  overflow set *before* displacement (nothing is lost). This is a data-safety ordering,
+  not a claim to reproduce the NREM-then-REM sequence.
+- **STM is a promotion-gated state, not a faster clock.** Atkinson–Shiffrin has the
+  short-term store decay in *seconds*; that timescale deliberately does **not** transfer
+  to a cross-session developer-memory tool, where a fact is "short-term" because it hasn't
+  yet earned promotion — not because a timer is expiring. Both tiers share `half_life_days`
+  and recall is tier-agnostic by default (`stm_recall_weight=1.0`); rapid short-term loss
+  is approximated by **capacity displacement**, not a separate decay constant. The reason
+  is domain-specific: a *fresh* fact is often the *most* relevant one (the thing being
+  worked on right now), so accelerating STM decay would fight recall rather than help it.
+  Any future STM-ranking change (e.g. defaulting `stm_recall_weight < 1`) is gated on first
+  extending `ltm eval` with a fresh/STM scenario so the effect can be measured.
+- **"Rehearsal" and "consolidation" are now distinct terms.** Inline frequency-boost is
+  *rehearsal* (Atkinson–Shiffrin maintenance); the offline sleep pass is *consolidation*
+  (ASCH). Earlier revisions of this doc used "consolidation" for the inline boost —
+  corrected above.
+
+Full design + the durable `MemoryBus` that carries rescue/consolidate work items:
 [`docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md`](docs/generated/designs/stm-ltm-consolidation-and-memory-bus.md).
 
 ## Cross-project
@@ -200,7 +294,9 @@ of launch subdirectory; configurable for monorepo granularity via `markers`.
 | Over-eager supersession retires a distinct fact | conservative default threshold (0.85); superseded rows are archived (reversible), not deleted |
 | Distillation quality (heuristic) | pluggable distiller; LLM adapter is the drop-in |
 | Plugin/hook API drift | thin Claude-Code adapter; core is framework-agnostic |
-| Planned durable queue becomes a de-facto dependency | `MemoryBus` is opt-in behind a Separated Interface; default `inproc` is stdlib SQLite; `nats` adapter fails open to `inproc`; core stays importable without a broker |
+| Durable queue becomes a de-facto dependency | `MemoryBus` is opt-in behind a Separated Interface; default `inproc` is stdlib SQLite; `nats` adapter fails open to `inproc`; core stays importable without a broker |
+| Consolidation prunes a still-useful fact | refine is default-off and `ltm eval`-gated; archival is a reversible status flip, not a delete; purge only removes rows past a long cold horizon |
+| STM leaks low-confidence facts into context | promotion is rehearsal/recall-gated; `stm_recall_weight` can down-rank STM; A/B with `ltm eval` |
 
 ## Status of the levers
 
@@ -211,11 +307,25 @@ Done and measured:
 - **Conflict resolution** — similarity supersession *and* explicit LLM links for
   vocabulary-disjoint conflicts.
 - **Hard expiry** — TTL sweep with frequency protection.
+- **Multi-store tiers + sleep pass** — explicit STM/LTM `tier` with rehearsal/recall
+  promotion, an offline `consolidate()` pass (replay / displace / integrate / refine /
+  purge), and a pure retention score. Forgetting/integration knobs (`integrate_threshold`,
+  `refine_keep_max`, `refine_prune_percentile`, `purge_horizon_days`) ship **default-off**,
+  to be `ltm eval`-tuned before enabling.
+- **REM-style integration** — the `integrate` stage: a stdlib heuristic dedup floor plus an
+  opt-in LLM tier (`merge_cluster`) that abstracts a near-duplicate cluster into one fact or
+  vetoes the merge. Reversible (`status='merged'`), fail-open, default-off.
+- **Durable capture queue** — `MemoryBus` Command queue: stdlib `inproc` SQLite default
+  (retry / backoff / DLQ / lease-recovery), opt-in auto-provisioned NATS, fail-open.
 
 Remaining:
+- **No separate REM sleep *phase*** — all consolidation stages run in one checkpoint pass,
+  not a distinct NREM-then-REM cycle. A deliberate simplification, not a missing capability.
 - **`hash`/heuristic remain the zero-dep defaults** — real recall needs
   `embedding=fastembed` (and an LLM distiller for best quality); these cost a
   dependency / tokens (or a local model), so they are opt-in.
-- **Eval set is small** (14 queries) — widen for tighter numbers.
+- **STM ranking stays default tier-agnostic** — `stm_recall_weight=1.0`; the measurable
+  lever exists (`ltm eval --stm`) but flipping the default awaits eval tuning.
+- **Eval set is modest** (34 facts / 29 queries + the STM scenario) — widen for tighter numbers.
 - **LLM distiller latency/cost** is unbounded per session — batching / a cheaper
   model for distillation is a future tuning knob.
