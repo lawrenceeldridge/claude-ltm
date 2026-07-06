@@ -86,6 +86,7 @@ class Config:
     bus_max_deliver: int
     bus_backoff: tuple[float, ...]
     lease_ttl: float
+    bus_dead_after: float
     nats_url: str
     nats_stream: str
     nats_provision: str
@@ -146,6 +147,9 @@ def get_config() -> Config:
         bus_max_deliver=int(_num(_opt("bus_max_deliver", "5"), 5)),
         bus_backoff=tuple(float(x) for x in _opt("bus_backoff", "5,30,120,600").split(",") if x.strip()),
         lease_ttl=_num(_opt("lease_ttl", "300"), 300),
+        # A pending work item no active backend ever pulls (e.g. parked on inproc after a
+        # switch to nats) dead-letters past this age, so it can't accumulate silently forever.
+        bus_dead_after=_num(_opt("bus_dead_after", str(7 * 86400)), 7 * 86400),
         nats_url=_opt("nats_url", "nats://localhost:4222"),
         nats_stream=_opt("nats_stream", "LTM_WORK"),
         # How to auto-provision a NATS server when bus=nats and none is reachable:

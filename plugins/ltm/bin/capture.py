@@ -104,6 +104,14 @@ def _run_worker(payload_path: str) -> None:
             import time
 
             store.sweep(time.time(), cfg.ttl_days * 86400, cfg.ttl_keep_frequency, project["key"])
+        # Work-queue maintenance (cheap, every capture): re-queue interrupted leases, and
+        # dead-letter pending items older than bus_dead_after so a backend-orphaned item
+        # (parked on inproc after a switch to nats) can't accumulate silently forever.
+        try:
+            store.reclaim_expired()
+            store.dead_stale(cfg.bus_dead_after)
+        except Exception:
+            pass
         # Consolidation ("sleep") — run at session boundaries, not every turn (like sleep
         # itself): replay promotes recalled short-term facts, displacement caps STM, and
         # refine/purge prune only when enabled (default no-op). Best-effort: never lose a

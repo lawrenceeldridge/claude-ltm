@@ -1139,6 +1139,30 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    def pending_work(self, limit: int = 500) -> list[sqlite3.Row]:
+        """Pending/interrupted items across all stages+projects — the set to migrate on a
+        bus-backend switch (dead rows are left; they're the DLQ). Oldest first."""
+        return self.db.execute(
+            "SELECT * FROM work_queue WHERE status IN ('pending', 'in_progress') "
+            "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def dead_stale(self, horizon_seconds: float, now: float | None = None) -> int:
+        """Dead-letter pending items older than the horizon — a backstop so an item no active
+        backend ever pulls (e.g. parked on inproc after a switch to nats) can't live forever.
+        Kept for inspection (``status='dead'``), not deleted. Disabled at ``horizon<=0``."""
+        if horizon_seconds <= 0:
+            return 0
+        cutoff = _now(now) - horizon_seconds
+        cur = self.db.execute(
+            "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 "
+            "WHERE status = 'pending' AND enqueued_at < ?",
+            (cutoff,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
     def count_work(self, stage: str | None = None, status: str | None = None) -> int:
         """Count work items, optionally filtered by stage/status (inspection, tests)."""
         sql = "SELECT COUNT(*) FROM work_queue WHERE 1=1"

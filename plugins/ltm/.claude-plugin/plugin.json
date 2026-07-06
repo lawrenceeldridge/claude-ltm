@@ -237,6 +237,13 @@
       "default": 300,
       "min": 1
     },
+    "bus_dead_after": {
+      "type": "number",
+      "title": "Queue dead-letter age (seconds)",
+      "description": "A pending work item unprocessed for longer than this is dead-lettered (kept for inspection), so an item no active backend ever pulls can't accumulate forever. Default 7 days; 0 disables.",
+      "default": 604800,
+      "min": 0
+    },
     "nats_url": {
       "type": "string",
       "title": "NATS URL",
