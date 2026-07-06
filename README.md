@@ -112,6 +112,7 @@ claude-ltm/
     │   ├── prefer_memory.py            #   PreToolUse — memory-first guard (LTM_ENFORCE)
     │   ├── mark_consulted.py           #   PostToolUse — records that memory was consulted
     │   ├── index_edit.py               #   PostToolUse — re-index edited files
+    │   ├── credit_read.py              #   PostToolUse — credit bounded reads of indexed files (ledger)
     │   ├── index_docs.py               #   SessionStart — auto-index the project
     │   ├── capture.py                  #   Stop/SessionEnd/PreCompact — detached capture + summary
     │   ├── mcp_server.py               #   MCP tools (recall, search_code, get_symbol, …)
@@ -177,22 +178,25 @@ ltm core                show the stable session-start memory block
 ltm projects            list every project in the global store
 ltm prune               delete all memory for the current project
 ltm sweep [--all]       archive stale facts (TTL expiry; --days N to override)
-ltm consolidate [--all] run the sleep pass: promote recalled STM, prune (if enabled)
+ltm consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
 ltm nats status|start|stop  manage the opt-in NATS server (bus=nats)
 ltm daemon              run the resident daemon (keeps the embedder warm)
 ltm viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
-ltm stats [--all]       token-savings ledger: injected (cost) vs saved (targeted reads + recall shortcuts), net
-ltm eval --backends …   benchmark embedding backends (see below)
+ltm stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
+ltm eval --backends … [--stm]  benchmark embedding backends; --stm adds the STM-tier lever scenario
+ltm drift               pin/check the embedding-drift canary
+ltm setup               provision the private fastembed venv (one-time)
 ltm demo                capture sample facts then recall (end-to-end proof)
 ```
 
 `ltm stats` is the effectiveness dashboard. It accounts both sides of the token
 budget from a local usage ledger: **cost** = bytes injected per prompt / at session
-start; **saved** = *measured* (a `get_symbol` / `get_doc_section` read of one unit
-instead of the whole file — real file-minus-body bytes) plus *estimated* (each `ok`
-recall verdict scored as one avoided grep+read, heuristic). The **net** is
-saved − cost. Passive injection that merely *might* have saved a search isn't
-credited, so net is a conservative floor, not a marketing number.
+start; **saved** = *measured* (a `get_symbol` / `get_doc_section` read of one unit —
+or a bounded `offset`/`limit` `Read` of an indexed file — instead of the whole file,
+real file-minus-span bytes) plus *estimated* (each `ok` recall verdict scored as one
+avoided grep+read, heuristic). The **net** is saved − cost. Passive injection that
+merely *might* have saved a search isn't credited, so net is a conservative floor,
+not a marketing number.
 
 ## Configuration
 

@@ -16,7 +16,7 @@ contracts. Wiring is in `plugins/ltm/hooks/hooks.json`; entry points are in
 | `SessionStart` | `index_docs.py` | Auto-index the project (single-flight, file-capped) | Off the hot path |
 | `UserPromptSubmit` | `recall_prompt.py` | JIT recall — inject only facts clearing `min_sim` | Tail of context; tiny, per-prompt |
 | `PreToolUse` | `prefer_memory.py` | Memory-first guard (`LTM_ENFORCE`) | Must be cheap; fail-open |
-| `PostToolUse` | `mark_consulted.py`, `index_edit.py` | Record that memory was consulted; re-index edited files | Off the hot path |
+| `PostToolUse` | `mark_consulted.py`, `index_edit.py`, `credit_read.py` | Record that memory was consulted; re-index edited files; credit bounded reads of indexed files in the ledger | Off the hot path; fail-open |
 | `Stop` / `SessionEnd` / `PreCompact` | `capture.py` | Spawn **detached** capture worker | Fire-and-forget; zero interactive cost |
 
 ## Fail-open contract (non-negotiable)
