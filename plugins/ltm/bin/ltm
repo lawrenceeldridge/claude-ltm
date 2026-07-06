@@ -234,7 +234,8 @@ def cmd_stats(args) -> int:
     print("token ledger (heuristic, ~4 chars/token):")
     print(f"  cost  — injected  : {s['injections']} injections, ~{s['cost_tokens']:,} tokens")
     print(
-        f"  saved — measured  : {s['targeted_reads']} targeted reads, "
+        f"  saved — measured  : {s['targeted_reads']} targeted reads + "
+        f"{s['bounded_reads']} bounded reads, "
         f"~{s['saved_measured_tokens']:,} tokens (whole-file reads avoided)"
     )
     print(

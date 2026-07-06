@@ -374,7 +374,7 @@ async function loadLedger() {
     el.innerHTML = 'saved <b>~' + fmtTok(s.net_tokens) + '</b> tok';
     el.title = 'net ~' + s.net_tokens.toLocaleString() + ' tokens (saved − cost)\\n'
       + '  cost injected:   ~' + s.cost_tokens.toLocaleString() + ' (' + s.injections + ' injections)\\n'
-      + '  saved measured:  ~' + s.saved_measured_tokens.toLocaleString() + ' (' + s.targeted_reads + ' targeted reads)\\n'
+      + '  saved measured:  ~' + s.saved_measured_tokens.toLocaleString() + ' (' + s.targeted_reads + ' targeted + ' + (s.bounded_reads || 0) + ' bounded reads)\\n'
       + '  saved estimated: ~' + s.saved_estimated_tokens.toLocaleString() + ' (' + s.ok_recalls + ' recall shortcuts)';
   } catch (e) { /* fail-open: leave the last-known value */ }
 }

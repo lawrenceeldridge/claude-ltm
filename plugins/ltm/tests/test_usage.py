@@ -6,7 +6,9 @@ aggregation via usage_stats. Stdlib unittest, hash embedder, no network.
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -77,6 +79,109 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(s["net_tokens"], 1000 + 1200 - 100)
         self.assertEqual(s["injections"], 1)
         self.assertEqual(s["targeted_reads"], 1)
+
+    def test_usage_summary_counts_bounded_reads_as_measured(self):
+        self.store.record_usage("p", "pull_symbol", bytes_saved=4000)  # 1000 tokens
+        self.store.record_usage("p", "read_bounded", bytes_saved=8000)  # 2000 tokens (bounded Read)
+        s = service.usage_summary(self.store, "p")
+        self.assertEqual(s["saved_measured_tokens"], 3000)  # both count as measured
+        self.assertEqual(s["targeted_reads"], 1)  # ltm-tool pulls only
+        self.assertEqual(s["bounded_reads"], 1)  # surfaced separately
+
+
+class CreditReadHookTests(unittest.TestCase):
+    """bin/credit_read.py — books a bounded Read of an indexed file as a measured saving."""
+
+    def setUp(self):
+        self.data = tempfile.TemporaryDirectory()
+        self.proj = tempfile.TemporaryDirectory()
+        (Path(self.proj.name) / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+        self.file = Path(self.proj.name) / "mod.py"
+        self.file.write_text("def foo():\n    return 1\n" * 60, encoding="utf-8")  # a sizable indexed file
+        os.environ["LTM_DATA_DIR"] = self.data.name
+        self.env = {
+            **os.environ,
+            "LTM_DATA_DIR": self.data.name,
+            "LTM_EMBEDDING": "hash",
+            "LTM_ENFORCE": "off",
+            "LTM_BUS": "inproc",
+        }
+        self.env.pop("LTM_PYTHON", None)
+
+    def tearDown(self):
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.data.cleanup()
+        self.proj.cleanup()
+
+    def _index(self) -> dict:
+        from core.index.indexer import index_file
+        from core.ports.embedding import get_embedder
+        from core.project import resolve_project
+
+        cfg = get_config()
+        store = Store(cfg.db_path)
+        project = resolve_project(str(self.file.parent), cfg.markers)
+        index_file(store, get_embedder(cfg), cfg, project, str(self.file))
+        store.close()
+        return project
+
+    def _run_hook(self, payload: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "credit_read.py")],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            env=self.env,
+        )
+
+    def _bounded(self, project_key: str) -> dict:
+        store = Store(get_config().db_path)
+        try:
+            return store.usage_stats(project_key).get("read_bounded", {})
+        finally:
+            store.close()
+
+    def _payload(self, **tool_input) -> dict:
+        return {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(self.file), **tool_input},
+            "tool_response": "def foo():\n    return 1\n",  # the small returned span
+        }
+
+    def test_credits_bounded_read_of_indexed_file(self):
+        project = self._index()
+        proc = self._run_hook(self._payload(offset=1, limit=5))
+        self.assertEqual(proc.returncode, 0)
+        entry = self._bounded(project["key"])
+        self.assertEqual(entry.get("n"), 1)
+        self.assertGreater(entry.get("bytes_saved", 0), 0)  # file - returned span
+
+    def test_no_credit_for_whole_file_read(self):
+        project = self._index()
+        self._run_hook(self._payload())  # no offset/limit
+        self.assertEqual(self._bounded(project["key"]), {})
+
+    def test_no_credit_for_unindexed_file(self):
+        project = {"key": "x"}  # not indexed; hook resolves its own key, finds no source_state
+        self._run_hook(self._payload(offset=1, limit=5))
+        # nothing indexed at all → no read_bounded row for any project
+        store = Store(get_config().db_path)
+        try:
+            self.assertEqual(store.usage_stats(project["key"]).get("read_bounded", {}), {})
+        finally:
+            store.close()
+
+    def test_fail_open_on_bad_payload(self):
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "credit_read.py")],
+            input="not json",
+            text=True,
+            capture_output=True,
+            timeout=30,
+            env=self.env,
+        )
+        self.assertEqual(proc.returncode, 0)  # never raises
 
 
 if __name__ == "__main__":

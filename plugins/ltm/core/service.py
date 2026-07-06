@@ -437,13 +437,16 @@ def usage_summary(store: Store, project_key: str | None = None) -> dict:
         return sum(usage.get(k, {}).get(field, 0) for k in kinds)
 
     cost = _s("bytes_in", "inject_prompt", "inject_core") // BYTES_PER_TOKEN
-    saved_measured = _s("bytes_saved", "pull_symbol", "pull_doc") // BYTES_PER_TOKEN
+    # Measured saving: a targeted read of one unit instead of the whole file — via the ltm
+    # tools (pull_symbol/pull_doc) OR a bounded offset/limit Read of an indexed file.
+    saved_measured = _s("bytes_saved", "pull_symbol", "pull_doc", "read_bounded") // BYTES_PER_TOKEN
     ok = recall["by_verdict"].get("ok", 0)
     saved_estimated = ok * TOKENS_SAVED_PER_OK
     return {
         "recalls": recall,
         "injections": _s("n", "inject_prompt", "inject_core"),
         "targeted_reads": _s("n", "pull_symbol", "pull_doc"),
+        "bounded_reads": _s("n", "read_bounded"),
         "ok_recalls": ok,
         "cost_tokens": cost,
         "saved_measured_tokens": saved_measured,
