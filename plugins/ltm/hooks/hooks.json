@@ -65,6 +65,17 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/credit_read.py"],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
