@@ -269,12 +269,14 @@ async function reloadRnr() {
   const r = await (await fetch(`/api/rnr?project=${encodeURIComponent(pk)}`)).json();
   seen = new Set();
   const queue = r.queue || [], archived = r.archived || [];
+  const dead = queue.filter(q => q.status === 'dead').length;
+  const deadLabel = dead ? ` · ${dead} dead-letter` : '';
   const qHTML = queue.length ? queue.map(qItemHTML).join('')
     : `<div class="empty">Queue empty — nothing awaiting re-distill or dead-lettered.</div>`;
   const aHTML = archived.length ? archived.map(c => cardHTML(c, false)).join('')
     : `<div class="empty">Nothing archived yet — supersession/displacement/merge/refine/expiry haven't retired any facts.</div>`;
   $('#list').innerHTML =
-    `<h3 class="sec">Rescue queue · ${queue.length}</h3>${qHTML}`
+    `<h3 class="sec">Rescue queue · ${queue.length}${deadLabel}</h3>${qHTML}`
     + `<h3 class="sec">Archived / forgotten · ${archived.length}</h3>${aHTML}`;
 }
 // Full re-render from the top: a query shows all ranked search hits; a blank query

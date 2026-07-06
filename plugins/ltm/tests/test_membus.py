@@ -116,6 +116,24 @@ class WorkQueueStoreTests(unittest.TestCase):
         self.assertEqual(self.store.dead_stale(0.0, now=10**9), 0)
         self.assertEqual(self.store.count_work(status="pending"), 1)
 
+    def test_recent_work_all_projects_newest_first(self):
+        self.store.enqueue_work(msg_id="a", stage="rescue", project_key="p1", now=100.0)
+        self.store.enqueue_work(msg_id="b", stage="rescue", project_key="p2", now=200.0)
+        self.assertEqual([r["msg_id"] for r in self.store.recent_work()], ["b", "a"])
+
+    def test_purge_work_by_status_stage_and_all(self):
+        self._enqueue("d1")
+        self._enqueue("d2")
+        self._enqueue("keep", stage="consolidate")
+        self.store.dead_work("d1")
+        self.store.dead_work("d2")
+        self.assertEqual(self.store.purge_work(status="dead"), 2)  # only dead-lettered
+        self.assertEqual(self.store.count_work(), 1)
+        self.assertEqual(self.store.purge_work(stage="consolidate"), 1)  # by stage
+        self.assertEqual(self.store.count_work(), 0)
+        self._enqueue("x")
+        self.assertEqual(self.store.purge_work(), 1)  # no filter → empties
+
 
 class DrainTests(unittest.TestCase):
     """Bus-switch reconciliation — inproc pendings migrate into the active backend."""

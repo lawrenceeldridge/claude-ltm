@@ -690,6 +690,30 @@ class Store:
             (project_key, limit),
         ).fetchall()
 
+    def recent_work(self, limit: int = 50) -> list[sqlite3.Row]:
+        """Work-queue rows across all projects, newest first — the `ltm queue` inspection view."""
+        return self.db.execute(
+            "SELECT * FROM work_queue ORDER BY enqueued_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def purge_work(self, status: str | None = None, stage: str | None = None) -> int:
+        """Delete work-queue rows, optionally filtered by status and/or stage. Returns count.
+
+        The maintenance op behind `ltm queue purge` — clears a backlog/DLQ that can't or
+        shouldn't be retried. With no filter it empties the queue entirely."""
+        sql = "DELETE FROM work_queue WHERE 1=1"
+        params: list = []
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        if stage is not None:
+            sql += " AND stage = ?"
+            params.append(stage)
+        cur = self.db.execute(sql, params)
+        self.db.commit()
+        return cur.rowcount
+
     def active_rows(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM facts WHERE status = 'active'").fetchall()
 
