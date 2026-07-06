@@ -84,6 +84,7 @@ class Config:
     stm_capacity: int
     promote_after_freq: int
     stm_recall_weight: float
+    spread_weight: float
     bus: str
     bus_max_deliver: int
     bus_backoff: tuple[float, ...]
@@ -153,6 +154,10 @@ def get_config() -> Config:
         stm_capacity=int(_num(_opt("stm_capacity", "0"), 0)),
         promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
         stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
+        # Associative spreading activation (ACT-R). Single gate for Idea #4: 0 = off (no edges
+        # recorded at capture, no spread at recall, hot path + store untouched). >0 both records
+        # co-occurrence/shared-entity edges and boosts co-activated candidates at recall.
+        spread_weight=_num(_opt("spread_weight", "0"), 0),
         # Durable work queue (MemoryBus). inproc = stdlib SQLite queue (default);
         # nats = opt-in JetStream adapter (Phase 5), fail-open to inproc.
         bus=_opt("bus", "inproc"),

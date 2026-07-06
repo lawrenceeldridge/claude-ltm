@@ -17,6 +17,7 @@ from core.domain.fusion import Channel, fuse
 from core.domain.lexical import token_set
 from core.domain.quantize import cosine, dequantize_int8
 from core.domain.scoring import frequency_boost, priority, recency_decay
+from core.domain.spreading import spread
 from core.ports.embedding import EmbeddingGateway
 from core.project import GLOBAL_PROJECT_KEY, Project
 from core.store import Store
@@ -87,6 +88,15 @@ def search(
     if cross and len(scored) < k:
         others = [r for r in store.active_rows() if r["project_key"] != project["key"]]
         scored += _score(others, query_vec, cfg, now, min_sim, 0.9)
+    # Spreading activation (Idea #4): boost candidates co-activated with other candidates via
+    # the association graph. Gated — spread_weight 0 (default) skips it entirely, so the hot
+    # path (and its cost) is byte-identical when off. The boost math is pure; the shell loads
+    # a bounded neighbour set.
+    if cfg.spread_weight > 0 and scored:
+        ids = [row["id"] for _s, row in scored]
+        boosts = spread(ids, store.neighbours(ids), cfg.spread_weight)
+        if boosts:
+            scored = [(s + boosts.get(row["id"], 0.0), row) for s, row in scored]
     scored.sort(key=lambda hit: hit[0], reverse=True)
     return scored[:k]
 

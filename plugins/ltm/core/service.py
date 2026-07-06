@@ -15,6 +15,7 @@ import time
 
 from core.config import Config
 from core.domain.confidence import compute_confidence
+from core.domain.entities import extract_entities
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.ports.distill import (
@@ -66,8 +67,10 @@ def add_records(
 ) -> int:
     inserted = 0
     now = time.time()
+    batch: list[tuple[str, str]] = []
     for record in records:
         fact_id = store.fact_id(project["key"], record.text)
+        batch.append((fact_id, record.text))
         if store.exists(fact_id):
             # Rehearsal — a fact seen again reinforces, and once rehearsed enough
             # (frequency >= promote_after_freq) it transfers from STM to LTM.
@@ -102,7 +105,42 @@ def add_records(
         if victims:
             store.supersede(list(victims), fact_id)
         inserted += 1
+    if cfg.spread_weight > 0 and kind == "fact":
+        _record_edges(store, project["key"], batch)
     return inserted
+
+
+_EDGE_BATCH_CAP = 50  # cap pairwise work per capture (O(n^2)); a capture's fact set is small
+
+
+def _record_edges(store: Store, project_key: str, batch: list[tuple[str, str]]) -> None:
+    """Record co-occurrence + shared-entity association edges (Idea #4).
+
+    Undirected (pair order normalised so a link is one row). Write-side, off the hot path,
+    reached only when spread_weight > 0. Co-occurrence links every pair captured together;
+    shared-entity links a fact to existing facts that mention the same extracted entity
+    (FTS-bounded). Best-effort — a failure here must never break capture.
+    """
+    facts = batch[:_EDGE_BATCH_CAP]
+    if not facts:
+        return
+    edges: list[tuple[str, str, str, float]] = []
+    ids = [fid for fid, _text in facts]
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = sorted((ids[i], ids[j]))
+            if a != b:
+                edges.append((a, b, "cooc", 1.0))
+    for fid, text in facts:
+        for ent in extract_entities(text):
+            for oid in store.fts_search(project_key, ent, limit=8):
+                if oid != fid:
+                    a, b = sorted((fid, oid))
+                    edges.append((a, b, "entity", 1.0))
+    try:
+        store.add_edges(edges)
+    except Exception:
+        pass
 
 
 def add_facts(

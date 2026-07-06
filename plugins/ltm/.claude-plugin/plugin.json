@@ -201,6 +201,13 @@
       "min": 0,
       "max": 1
     },
+    "spread_weight": {
+      "type": "number",
+      "title": "Associative spreading weight",
+      "description": "Spreading activation over the fact association graph (ACT-R). 0 = off (default): no edges recorded at capture, no spread at recall — store and hot path untouched. Above 0 records co-occurrence/shared-entity edges and boosts candidates co-activated with other retrieved facts. Retrieval-affecting — tune with `ltm eval` before enabling.",
+      "default": 0,
+      "min": 0
+    },
     "integrate_threshold": {
       "type": "number",
       "title": "Integrate threshold (merge)",
