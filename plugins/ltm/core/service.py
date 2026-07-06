@@ -635,6 +635,10 @@ def recall_structured(
     Never raises on an empty store — it returns an explicit no_memory verdict.
     """
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
+    # On-demand recall searches the broader "activated LTM" breadth (Cowan), not the small
+    # injected focus; an explicit k still overrides. The injected hot path (recall_prompt_block
+    # -> search -> top_k) is unaffected, so the per-turn token focus stays small.
+    k = cfg.activated_k if k is None else k
     hits = search_fused(store, embedder, project, query, cfg, k=k)
     sims = [sim for _score, sim, _row in hits]
     identity = has_overlap(query, hits[0][2]["text"]) if hits else None

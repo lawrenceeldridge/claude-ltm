@@ -68,10 +68,17 @@
     "top_k": {
       "type": "number",
       "title": "Recall results per prompt",
-      "description": "Max facts injected just-in-time on each prompt.",
+      "description": "Max facts injected just-in-time on each prompt — the small 'focus of attention' (Cowan ~4).",
       "default": 3,
       "min": 1,
       "max": 10
+    },
+    "activated_k": {
+      "type": "number",
+      "title": "On-demand recall breadth",
+      "description": "How many facts the on-demand `recall` MCP tool searches — the broader 'activated long-term memory' beyond the injected focus. Blank/0 uses top_k, so the two-level split is off until raised. Does not affect per-prompt injected tokens.",
+      "default": 0,
+      "min": 0
     },
     "min_sim": {
       "type": "number",
