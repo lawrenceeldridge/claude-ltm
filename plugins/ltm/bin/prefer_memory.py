@@ -29,6 +29,13 @@ from pathlib import Path
 _CODE_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _MIN_READ_BYTES = 4096
 
+# Anti-pattern prevention (Phase 3): tools whose actions can repeat a catalogued mistake,
+# and the minimum meaningful token overlap for a rule to be considered relevant (>=2 keeps
+# the hot-path warning precise — a single shared common word never fires it).
+_ANTIPATTERN_TOOLS = {"Bash", "Edit", "Write", "MultiEdit"}
+_ANTIPATTERN_MIN_OVERLAP = 2
+_ANTIPATTERN_MAX_CHARS = 600
+
 # A Bash command that is really a filesystem/code search — the Bash equivalent of the
 # Grep/Glob tools, which would otherwise slip past this guard entirely. Deliberately
 # narrow (dedicated search tools, or recursive grep, or find-by-name) so ordinary pipe
@@ -124,6 +131,69 @@ def _is_indexed(file_path: str) -> bool:
         return False
 
 
+def _tool_query(tool: str, tool_input: dict) -> str:
+    """The text to match a tool action against the anti-pattern catalogue.
+
+    Bash's command carries the richest signal (the flagship case: a mistyped CLI flag);
+    for file edits the path is the cue (e.g. a rule about hand-editing generated files)."""
+    if tool == "Bash":
+        return str(tool_input.get("command", ""))
+    return str(tool_input.get("file_path", ""))
+
+
+def _antipattern_warning(session: str, tool: str, tool_input: dict) -> str | None:
+    """A capped warning naming catalogued anti-patterns relevant to this tool action, or None.
+
+    Lexical only (token overlap over the small anti-pattern set) — no embedding on the hot
+    path. Deduped per (session, rule) so a given rule is injected at most once a session, and
+    strictly fail-open: any error yields no warning and never blocks the tool.
+    """
+    try:
+        query = _tool_query(tool, tool_input)
+        if not query:
+            return None
+        from _bootstrap import plugin_root
+
+        plugin_root()
+        from core.config import get_config
+        from core.domain.lexical import token_set
+        from core.project import GLOBAL_PROJECT_KEY, resolve_project
+        from core.store import Store
+
+        cfg = get_config()
+        if not cfg.antipatterns:
+            return None
+        qtokens = token_set(query)
+        if not qtokens:
+            return None
+        project = resolve_project(os.getcwd(), cfg.markers)
+        store = Store(cfg.db_path)
+        try:
+            rows = store.active_antipatterns(project["key"]) + store.active_antipatterns(GLOBAL_PROJECT_KEY)
+        finally:
+            store.close()
+        scored = sorted(
+            ((len(qtokens & token_set(row["text"])), row["id"], row["text"]) for row in rows),
+            key=lambda t: t[0],
+            reverse=True,
+        )
+        header = "claude-ltm — a catalogued mistake applies to this action; avoid repeating it:"
+        lines: list[str] = []
+        used = len(header)
+        for overlap, rid, text in scored:
+            if overlap < _ANTIPATTERN_MIN_OVERLAP:
+                break  # sorted desc — nothing below the floor remains
+            line = f"- {text}"
+            if used + len(line) + 1 > _ANTIPATTERN_MAX_CHARS:
+                break
+            if _once(session, f"ap-{rid}"):  # once per rule per session — bounds token cost
+                lines.append(line)
+                used += len(line) + 1
+        return "\n".join([header, *lines]) if lines else None
+    except Exception:
+        return None
+
+
 def main() -> int:
     from _bootstrap import hooks_disabled
 
@@ -139,6 +209,15 @@ def main() -> int:
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     session = payload.get("session_id") or str(os.getppid())
+
+    # Anti-pattern prevention: warn before an action that would repeat a catalogued mistake.
+    # Highest-value signal, so it takes priority over the search/read nudges (a hook emits one
+    # object). Fail-open and lexical-only — no embedding on the hot path.
+    if tool in _ANTIPATTERN_TOOLS:
+        warning = _antipattern_warning(session, tool, tool_input)
+        if warning:
+            _emit_context(warning)
+            return 0
 
     if tool == "Read":
         fp = tool_input.get("file_path", "")

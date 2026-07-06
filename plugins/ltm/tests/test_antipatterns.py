@@ -22,6 +22,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "bin"))
+
+import prefer_memory  # noqa: E402  (PreToolUse guard — Phase 3 anti-pattern warning)
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
@@ -396,6 +399,90 @@ class LifecycleTests(unittest.TestCase):
         counts = consolidate(self.store, self.cfg, self.project)
         self.assertIn("invalidated", counts)
         self.assertEqual(counts["invalidated"], 1)
+
+
+class Phase3PreToolUseTests(unittest.TestCase):
+    """Phase 3 — the PreToolUse guard warns before an action that repeats a catalogued mistake."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.cfg = replace(get_config(), distiller="heuristic", antipatterns=True)
+        store = Store(self.cfg.db_path)
+        embedder = HashEmbedding(dim=self.cfg.dim)
+        rec = DistilledFact(
+            text="Never put an AI-tool flag like --sandbox into a curl shell command; set it in the tool schema",
+            type="antipattern",
+            scope="global",
+        )
+        service.add_records(store, embedder, self.cfg, global_project(), "s1", [rec], kind="antipattern", tier="ltm")
+        store.close()
+
+    def tearDown(self):
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+
+    def _sess(self):
+        return f"ap3-{os.getpid()}-{self._testMethodName}"
+
+    def test_warns_on_matching_bash(self):
+        w = prefer_memory._antipattern_warning(
+            self._sess(), "Bash", {"command": "curl -X PUT https://api/data --sandbox disabled"}
+        )
+        self.assertIsNotNone(w)
+        self.assertIn("--sandbox", w)
+
+    def test_dedup_same_rule_once_per_session(self):
+        s = self._sess()
+        first = prefer_memory._antipattern_warning(s, "Bash", {"command": "curl --sandbox disabled"})
+        second = prefer_memory._antipattern_warning(s, "Bash", {"command": "curl --sandbox disabled"})
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)  # same rule already injected this session
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(prefer_memory._antipattern_warning(self._sess(), "Bash", {"command": "ls -la /tmp"}))
+
+    def test_empty_input_fail_open(self):
+        self.assertIsNone(prefer_memory._antipattern_warning(self._sess(), "Bash", {}))
+
+    def test_disabled_by_config(self):
+        saved = os.environ.get("LTM_ANTIPATTERNS")
+        os.environ["LTM_ANTIPATTERNS"] = "false"
+        try:
+            self.assertIsNone(
+                prefer_memory._antipattern_warning(self._sess(), "Bash", {"command": "curl --sandbox disabled"})
+            )
+        finally:
+            if saved is None:
+                os.environ.pop("LTM_ANTIPATTERNS", None)
+            else:
+                os.environ["LTM_ANTIPATTERNS"] = saved
+
+    def test_hook_end_to_end_emits_context(self):
+        # Drive bin/prefer_memory.py as a subprocess: a matching Bash command yields
+        # additionalContext and exit 0 (fail-open contract holds).
+        env = {**os.environ, "LTM_DATA_DIR": self.tmp.name, "LTM_ANTIPATTERNS": "true", "LTM_ENFORCE": "advisory"}
+        env.pop("LTM_PYTHON", None)
+        payload = json.dumps(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "curl -X PUT https://api/data --sandbox disabled"},
+                "session_id": self._sess(),
+            }
+        )
+        import subprocess
+
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "prefer_memory.py")],
+            input=payload,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr[:300])
+        self.assertIn("additionalContext", proc.stdout)
+        self.assertIn("--sandbox", proc.stdout)
 
 
 if __name__ == "__main__":

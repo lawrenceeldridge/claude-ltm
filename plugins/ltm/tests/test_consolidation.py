@@ -68,7 +68,18 @@ class StageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LTM_DATA_DIR"] = self.tmp.name
-        self.cfg = replace(get_config(), distiller="heuristic")
+        # Pin every consolidation lever to its code default (all off) so the suite is hermetic
+        # against ambient LTM_* forgetting config in the environment; the tests that exercise a
+        # lever override it locally via replace(self.cfg, ...).
+        self.cfg = replace(
+            get_config(),
+            distiller="heuristic",
+            stm_capacity=0,
+            integrate_threshold=0,
+            refine_keep_max=0,
+            refine_prune_percentile=0,
+            purge_horizon_days=0,
+        )
         self.store = Store(self.cfg.db_path)
         self.embedder = HashEmbedding(dim=self.cfg.dim)
         self.project = {"key": "test", "path": "/tmp/test", "label": "test"}
