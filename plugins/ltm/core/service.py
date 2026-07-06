@@ -15,6 +15,7 @@ import time
 
 from core.config import Config
 from core.domain.confidence import compute_confidence
+from core.domain.entities import extract_entities
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
 from core.ports.distill import (
@@ -27,7 +28,7 @@ from core.ports.distill import (
 from core.ports.embedding import EmbeddingGateway
 from core.ports.membus import WorkItem, get_bus
 from core.project import GLOBAL_PROJECT_KEY, Project, global_project
-from core.recall import render_block, search, search_fused
+from core.recall import render_block, render_scaffold, search, search_fused
 from core.store import Store
 from core.transcript import extract_incremental_parts, extract_text
 
@@ -66,8 +67,10 @@ def add_records(
 ) -> int:
     inserted = 0
     now = time.time()
+    batch: list[tuple[str, str]] = []
     for record in records:
         fact_id = store.fact_id(project["key"], record.text)
+        batch.append((fact_id, record.text))
         if store.exists(fact_id):
             # Rehearsal — a fact seen again reinforces, and once rehearsed enough
             # (frequency >= promote_after_freq) it transfers from STM to LTM.
@@ -102,7 +105,42 @@ def add_records(
         if victims:
             store.supersede(list(victims), fact_id)
         inserted += 1
+    if cfg.spread_weight > 0 and kind == "fact":
+        _record_edges(store, project["key"], batch)
     return inserted
+
+
+_EDGE_BATCH_CAP = 50  # cap pairwise work per capture (O(n^2)); a capture's fact set is small
+
+
+def _record_edges(store: Store, project_key: str, batch: list[tuple[str, str]]) -> None:
+    """Record co-occurrence + shared-entity association edges (Idea #4).
+
+    Undirected (pair order normalised so a link is one row). Write-side, off the hot path,
+    reached only when spread_weight > 0. Co-occurrence links every pair captured together;
+    shared-entity links a fact to existing facts that mention the same extracted entity
+    (FTS-bounded). Best-effort — a failure here must never break capture.
+    """
+    facts = batch[:_EDGE_BATCH_CAP]
+    if not facts:
+        return
+    edges: list[tuple[str, str, str, float]] = []
+    ids = [fid for fid, _text in facts]
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = sorted((ids[i], ids[j]))
+            if a != b:
+                edges.append((a, b, "cooc", 1.0))
+    for fid, text in facts:
+        for ent in extract_entities(text):
+            for oid in store.fts_search(project_key, ent, limit=8):
+                if oid != fid:
+                    a, b = sorted((fid, oid))
+                    edges.append((a, b, "entity", 1.0))
+    try:
+        store.add_edges(edges)
+    except Exception:
+        pass
 
 
 def add_facts(
@@ -501,7 +539,9 @@ def recall_core_block(
     # The core is a stable, recency-based orientation block, not a query-driven
     # retrieval — so its ids are discarded (attributing them would inflate recall_count
     # for merely-recent facts every session and pollute the retention signal).
-    block, _ids = render_block(f"Project memory ({project['label']}):", hits, cfg.max_chars)
+    header = f"Project memory ({project['label']}):"
+    render = render_scaffold if cfg.core_scaffold else render_block
+    block, _ids = render(header, hits, cfg.max_chars)
     if block:  # ledger: cost side — the once-per-session core injection
         store.record_usage(project["key"], "inject_core", bytes_in=len(block))
     return block
@@ -635,6 +675,10 @@ def recall_structured(
     Never raises on an empty store — it returns an explicit no_memory verdict.
     """
     max_chars = cfg.recall_max_chars if max_chars is None else max_chars
+    # On-demand recall searches the broader "activated LTM" breadth (Cowan), not the small
+    # injected focus; an explicit k still overrides. The injected hot path (recall_prompt_block
+    # -> search -> top_k) is unaffected, so the per-turn token focus stays small.
+    k = cfg.activated_k if k is None else k
     hits = search_fused(store, embedder, project, query, cfg, k=k)
     sims = [sim for _score, sim, _row in hits]
     identity = has_overlap(query, hits[0][2]["text"]) if hits else None

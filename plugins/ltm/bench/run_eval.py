@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 from core import service  # noqa: E402
 from core.config import get_config  # noqa: E402
+from core.consolidation.integrate import integrate  # noqa: E402
 from core.domain.quantize import cosine  # noqa: E402
 from core.ports.distill import DistilledFact  # noqa: E402
 from core.ports.embedding import EmbeddingGateway, HashEmbedding  # noqa: E402
@@ -133,7 +134,24 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
         "embed_ms/fact": embed_ms / len(facts),
         "query_ms": query_ms,
         "bytes/fact": bytes_per_fact,
+        "n": len(queries),
     }
+
+
+def wilson(k: float, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score 95% interval for a proportion ``k/n``. Honest at small n and near 0/1.
+
+    ``k`` is passed as a float (rate*n rounded) since the caller carries rates, not counts.
+    Returns ``(lo, hi)``; a zero-width span for ``n == 0``.
+    """
+    if n <= 0:
+        return 0.0, 0.0
+    k = max(0.0, min(float(n), round(k)))
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 def _fmt(value) -> str:
@@ -152,6 +170,21 @@ def _print_table(results: list[dict]) -> None:
     print("  ".join("-" * widths[c] for c in cols))
     for r in results:
         print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
+
+
+def _print_ci(results: list[dict]) -> None:
+    """Report the Wilson 95% interval on the headline proportions, so between-backend
+    deltas are read against the sample's resolution (see the ltm-design statistics ref)."""
+    if not results:
+        return
+    print("\n95% Wilson intervals (proportion metrics):")
+    for r in results:
+        n = r.get("n", 0)
+        parts = []
+        for metric in ("recall@1", "recall@3"):
+            lo, hi = wilson(r[metric] * n, n)
+            parts.append(f"{metric} {r[metric]:.3f} [{lo:.3f}, {hi:.3f}]")
+        print(f"  {r['backend']} (n={n}): " + "  ".join(parts))
 
 
 def evaluate_stm(data: dict, base_cfg, weights: tuple[float, ...] = (1.0, 0.5, 0.0)) -> list[dict]:
@@ -247,7 +280,69 @@ def _print_antipattern_table(rows: list[dict]) -> None:
         print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
 
 
-def main(backends: list[str], stm: bool = False, antipatterns: bool = False) -> int:
+def evaluate_integrate(data: dict, base_cfg) -> list[dict]:
+    """Measure the integrate (gist-chunking) stage — Idea #3.
+
+    Builds a store with a near-duplicate cluster plus distinct facts (hash embedder —
+    deterministic, no network), runs the heuristic integrate floor at the scenario
+    threshold, and checks the cluster collapses to one survivor (active count drops)
+    while recall of the cluster's answer is preserved. A pass means dedup reduces
+    redundant injection without losing the fact."""
+    scenario = data.get("duplicate_cluster_scenario")
+    if not scenario:
+        return []
+    facts, queries = scenario["facts"], scenario["queries"]
+    threshold = scenario.get("threshold", 0.9)
+    # heuristic distiller => integrate uses the stdlib floor (no LLM); keep near-dups alive at capture.
+    cfg = replace(
+        base_cfg, integrate_threshold=threshold, supersede_threshold=1.0, top_k=10, min_sim=-1.0, distiller="heuristic"
+    )
+    embedder = HashEmbedding(dim=cfg.dim)
+    tmp = tempfile.mkdtemp(prefix="ltm-bench-int-")
+    store = Store(Path(tmp) / "int.db")
+    project = {"key": "eval-integrate", "path": tmp, "label": "eval"}
+    service.add_facts(store, embedder, cfg, project, "eval", facts)
+
+    def rank_fn(query: str) -> list[str]:
+        return [row["text"] for _s, row in search(store, embedder, project, query, cfg, k=10, min_sim=-1.0)]
+
+    before = len(store.active_rows_for_project(project["key"]))
+    r1_before, r3_before, _, _ = _score_queries(queries, facts, rank_fn)
+    merged = integrate(store, cfg, project, embedder=embedder)
+    after = len(store.active_rows_for_project(project["key"]))
+    r1_after, r3_after, _, _ = _score_queries(queries, facts, rank_fn)
+    store.close()
+    return [
+        {
+            "threshold": threshold,
+            "facts_before": before,
+            "facts_after": after,
+            "merged": merged,
+            "recall@3_before": r3_before,
+            "recall@3_after": r3_after,
+            "recall_preserved": r3_after >= r3_before,
+        }
+    ]
+
+
+def _print_integrate_table(rows: list[dict]) -> None:
+    cols = [
+        "threshold",
+        "facts_before",
+        "facts_after",
+        "merged",
+        "recall@3_before",
+        "recall@3_after",
+        "recall_preserved",
+    ]
+    widths = {c: max(len(c), *(len(_fmt(r[c])) for r in rows)) for c in cols}
+    print("  ".join(c.ljust(widths[c]) for c in cols))
+    print("  ".join("-" * widths[c] for c in cols))
+    for r in rows:
+        print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
+
+
+def main(backends: list[str], stm: bool = False, antipatterns: bool = False, integrate_stage: bool = False) -> int:
     data = json.loads(DATASET.read_text(encoding="utf-8"))
     cfg = get_config()
     print(f"dataset: {len(data['facts'])} facts, {len(data['queries'])} paraphrased queries\n")
@@ -259,6 +354,7 @@ def main(backends: list[str], stm: bool = False, antipatterns: bool = False) -> 
             print(f"[skipped {spec}] {exc}")
     print()
     _print_table(results)
+    _print_ci(results)
     if stm:
         stm_rows = evaluate_stm(data, cfg)
         if stm_rows:
@@ -269,6 +365,11 @@ def main(backends: list[str], stm: bool = False, antipatterns: bool = False) -> 
         if ap_rows:
             print("\nAnti-pattern union — recall of global anti-patterns from a different project:\n")
             _print_antipattern_table(ap_rows)
+    if integrate_stage:
+        int_rows = evaluate_integrate(data, cfg)
+        if int_rows:
+            print("\nIntegrate (gist chunking) — cluster collapses to one survivor, recall preserved:\n")
+            _print_integrate_table(int_rows)
     return 0
 
 
@@ -279,11 +380,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--antipatterns", action="store_true", help="also run the global anti-pattern surfacing scenario"
     )
+    parser.add_argument("--integrate", action="store_true", help="also run the integrate (gist-chunking) scenario")
     args = parser.parse_args()
     sys.exit(
         main(
             [b.strip() for b in args.backends.split(",") if b.strip()],
             stm=args.stm,
             antipatterns=args.antipatterns,
+            integrate_stage=args.integrate,
         )
     )

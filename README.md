@@ -212,7 +212,10 @@ or `LTM_*` env vars for standalone use:
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
 | `antipatterns` | `true` | mine admitted mistakes into durable `antipattern` memories (a strict rule + do/don't), surfaced to prevent repeats; gated by an admission-marker scan, runs in the detached worker. No-op without an LLM distiller |
-| `top_k` | `3` | facts injected per prompt |
+| `top_k` | `3` | facts injected per prompt — the small injected focus (Cowan ~4) |
+| `activated_k` | `0` | breadth the on-demand `recall` MCP tool searches (0 = use `top_k`); the broader "activated LTM" beyond the injected focus, no per-prompt token cost |
+| `core_scaffold` | `false` | render the session core as a titled scaffold (facts grouped by card title) instead of a flat list — an LT-WM retrieval structure; same char budget |
+| `spread_weight` | `0` | associative spreading activation (ACT-R): 0 = off (no edges, hot path untouched); >0 records co-occurrence/shared-entity edges at capture and boosts co-activated candidates at recall — `ltm eval`-tune before enabling |
 | `min_sim` | `0.12` | similarity threshold to inject |
 | `core_size` | `5` | stable facts injected at session start (0 disables) |
 | `max_chars` | `800` | hard cap on injected characters (token guard) |

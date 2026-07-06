@@ -68,10 +68,17 @@
     "top_k": {
       "type": "number",
       "title": "Recall results per prompt",
-      "description": "Max facts injected just-in-time on each prompt.",
+      "description": "Max facts injected just-in-time on each prompt — the small 'focus of attention' (Cowan ~4).",
       "default": 3,
       "min": 1,
       "max": 10
+    },
+    "activated_k": {
+      "type": "number",
+      "title": "On-demand recall breadth",
+      "description": "How many facts the on-demand `recall` MCP tool searches — the broader 'activated long-term memory' beyond the injected focus. Blank/0 uses top_k, so the two-level split is off until raised. Does not affect per-prompt injected tokens.",
+      "default": 0,
+      "min": 0
     },
     "min_sim": {
       "type": "number",
@@ -88,6 +95,12 @@
       "default": 5,
       "min": 0,
       "max": 20
+    },
+    "core_scaffold": {
+      "type": "boolean",
+      "title": "Structured session core",
+      "description": "Render the session core as a titled scaffold (facts grouped under their card title) instead of a flat list — a long-term-working-memory retrieval structure. Same character budget; off by default (flat).",
+      "default": false
     },
     "max_chars": {
       "type": "number",
@@ -187,6 +200,13 @@
       "default": 1.0,
       "min": 0,
       "max": 1
+    },
+    "spread_weight": {
+      "type": "number",
+      "title": "Associative spreading weight",
+      "description": "Spreading activation over the fact association graph (ACT-R). 0 = off (default): no edges recorded at capture, no spread at recall — store and hot path untouched. Above 0 records co-occurrence/shared-entity edges and boosts candidates co-activated with other retrieved facts. Retrieval-affecting — tune with `ltm eval` before enabling.",
+      "default": 0,
+      "min": 0
     },
     "integrate_threshold": {
       "type": "number",

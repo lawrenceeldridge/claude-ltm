@@ -67,8 +67,10 @@ class Config:
     embedding_model: str
     dim: int
     top_k: int
+    activated_k: int
     min_sim: float
     core_size: int
+    core_scaffold: bool
     max_chars: int
     index_top_k: int
     index_min_sim: float
@@ -82,6 +84,7 @@ class Config:
     stm_capacity: int
     promote_after_freq: int
     stm_recall_weight: float
+    spread_weight: float
     bus: str
     bus_max_deliver: int
     bus_backoff: tuple[float, ...]
@@ -118,13 +121,22 @@ def get_config() -> Config:
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     markers = tuple(m.strip() for m in _opt("markers", _DEFAULT_MARKERS).split(",") if m.strip())
+    # Cowan's focus of attention (~4) vs activated LTM: top_k is the small injected focus;
+    # activated_k is the broader breadth the on-demand `recall` MCP tool searches. Defaults
+    # to top_k, so the two-level split is inert until activated_k is raised deliberately.
+    top_k = int(_num(_opt("top_k", "3"), 3))
+    activated_k = int(_num(_opt("activated_k", str(top_k)), top_k))
     return Config(
         embedding=_opt("embedding", "hash"),
         embedding_model=_opt("embedding_model", ""),
         dim=int(_num(_opt("dim", "256"), 256)),
-        top_k=int(_num(_opt("top_k", "3"), 3)),
+        top_k=top_k,
+        activated_k=max(activated_k, top_k),
         min_sim=_num(_opt("min_sim", "0.12"), 0.12),
         core_size=int(_num(_opt("core_size", "5"), 5)),
+        # LT-WM retrieval structure: group the session core into a titled scaffold instead of
+        # a flat list. Default off preserves the current flat core block.
+        core_scaffold=_opt("core_scaffold", "false").lower() in ("1", "true", "yes", "on"),
         max_chars=int(_num(_opt("max_chars", "800"), 800)),
         # Passive index injection at UserPromptSubmit (0 = off). FTS-prefiltered then
         # cosine-reranked, so it stays hot-path-cheap regardless of index size.
@@ -142,6 +154,10 @@ def get_config() -> Config:
         stm_capacity=int(_num(_opt("stm_capacity", "0"), 0)),
         promote_after_freq=int(_num(_opt("promote_after_freq", "2"), 2)),
         stm_recall_weight=_num(_opt("stm_recall_weight", "1.0"), 1.0),
+        # Associative spreading activation (ACT-R). Single gate for Idea #4: 0 = off (no edges
+        # recorded at capture, no spread at recall, hot path + store untouched). >0 both records
+        # co-occurrence/shared-entity edges and boosts co-activated candidates at recall.
+        spread_weight=_num(_opt("spread_weight", "0"), 0),
         # Durable work queue (MemoryBus). inproc = stdlib SQLite queue (default);
         # nats = opt-in JetStream adapter (Phase 5), fail-open to inproc.
         bus=_opt("bus", "inproc"),

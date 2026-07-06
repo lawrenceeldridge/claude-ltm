@@ -17,6 +17,7 @@ from core.domain.fusion import Channel, fuse
 from core.domain.lexical import token_set
 from core.domain.quantize import cosine, dequantize_int8
 from core.domain.scoring import frequency_boost, priority, recency_decay
+from core.domain.spreading import spread
 from core.ports.embedding import EmbeddingGateway
 from core.project import GLOBAL_PROJECT_KEY, Project
 from core.store import Store
@@ -87,6 +88,15 @@ def search(
     if cross and len(scored) < k:
         others = [r for r in store.active_rows() if r["project_key"] != project["key"]]
         scored += _score(others, query_vec, cfg, now, min_sim, 0.9)
+    # Spreading activation (Idea #4): boost candidates co-activated with other candidates via
+    # the association graph. Gated — spread_weight 0 (default) skips it entirely, so the hot
+    # path (and its cost) is byte-identical when off. The boost math is pure; the shell loads
+    # a bounded neighbour set.
+    if cfg.spread_weight > 0 and scored:
+        ids = [row["id"] for _s, row in scored]
+        boosts = spread(ids, store.neighbours(ids), cfg.spread_weight)
+        if boosts:
+            scored = [(s + boosts.get(row["id"], 0.0), row) for s, row in scored]
     scored.sort(key=lambda hit: hit[0], reverse=True)
     return scored[:k]
 
@@ -182,6 +192,52 @@ def render_block(header: str, hits: list[Hit], max_chars: int) -> tuple[str, lis
         lines.append(line)
         ids.append(row["id"])
         used += len(line) + 1
+    if len(lines) == 1:
+        return "", []
+    return "\n".join(lines), ids
+
+
+def render_scaffold(header: str, hits: list[Hit], max_chars: int) -> tuple[str, list[str]]:
+    """LT-WM retrieval structure (Ericsson & Kintsch): render the session core as a titled
+    scaffold — facts grouped under their card ``title`` — rather than a flat list, so the
+    stable orientation block reads as an index card of the project's topics.
+
+    Same contract as ``render_block``: one line per fact, ``max_chars``-capped, returns the
+    included ids, and the Null Object (``("", [])``) on empty/all-truncated input. Untitled
+    facts group under a plain heading so behaviour is preserved when no titles exist.
+    """
+    if not hits:
+        return "", []
+    groups: dict[str, list[sqlite3.Row]] = {}
+    order: list[str] = []
+    for _score_value, row in hits:
+        title = (row["title"] or "").strip() if "title" in row.keys() else ""
+        key = title or "Notes"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    lines = [header]
+    ids: list[str] = []
+    used = len(header)
+    for key in order:
+        heading = f"  {key}:"
+        if used + len(heading) + 1 > max_chars:
+            break
+        pending = [heading]
+        pending_len = len(heading) + 1
+        rows_added = []
+        for row in groups[key]:
+            line = f"    - {row['text']}"
+            if used + pending_len + len(line) + 1 > max_chars:
+                break
+            pending.append(line)
+            pending_len += len(line) + 1
+            rows_added.append(row["id"])
+        if rows_added:  # only emit a heading that carries at least one fact
+            lines.extend(pending)
+            ids.extend(rows_added)
+            used += pending_len
     if len(lines) == 1:
         return "", []
     return "\n".join(lines), ids

@@ -359,6 +359,38 @@ def _v13_usage(db: sqlite3.Connection) -> None:
     )
 
 
+def _v14_outcomes(db: sqlite3.Connection) -> None:
+    # Use-feedback tallies (Engle/Kane executive attention): how often a fact was injected
+    # into the focus vs actually engaged with. Feeds the retention-score inhibition term.
+    # Additive, default 0; the inhibition weight stays 0 until a "used" detector is wired,
+    # so these accumulate for that follow-up without affecting ranking yet.
+    _add_columns(
+        db,
+        [
+            ("injected_count", "injected_count INTEGER NOT NULL DEFAULT 0"),
+            ("used_count", "used_count INTEGER NOT NULL DEFAULT 0"),
+        ],
+    )
+
+
+def _v15_edges(db: sqlite3.Connection) -> None:
+    # Associative graph (ACT-R spreading activation): undirected edges between facts that
+    # co-occurred in a capture or share an extracted entity. Recorded only when spreading is
+    # enabled (spread_weight > 0), so the table stays empty by default; weight accumulates on
+    # repeat. Deleted with their facts by the caller's prune path.
+    db.executescript(
+        "CREATE TABLE IF NOT EXISTS fact_edges ("
+        "  src_id TEXT NOT NULL,"
+        "  dst_id TEXT NOT NULL,"
+        "  kind   TEXT NOT NULL,"
+        "  weight REAL NOT NULL DEFAULT 1.0,"
+        "  PRIMARY KEY (src_id, dst_id, kind)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_edges_src ON fact_edges(src_id);"
+        "CREATE INDEX IF NOT EXISTS idx_edges_dst ON fact_edges(dst_id);"
+    )
+
+
 def _v12_index_meta(db: sqlite3.Connection) -> None:
     # Human name for a project's index. The index keys on hash(path) and stores only
     # relative source paths, so a project with chunks but no memory facts had nothing
@@ -392,6 +424,8 @@ _MIGRATIONS = [
     _v11_rescue_from_redistill,
     _v12_index_meta,
     _v13_usage,
+    _v14_outcomes,
+    _v15_edges,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -520,6 +554,67 @@ class Store:
         )
         self.db.commit()
         return cur.rowcount
+
+    def mark_injected(self, fact_ids: list[str]) -> int:
+        """Use-feedback: record that facts were injected into the focus (Engle/Kane).
+
+        The denominator of the inhibition signal. Off the interactive hot path in the
+        current design (wiring the injection tally into recall is a follow-up); safe to call
+        wherever injected ids are known. Returns rows updated.
+        """
+        if not fact_ids:
+            return 0
+        cur = self.db.execute(
+            f"UPDATE facts SET injected_count = injected_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
+            tuple(fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def mark_used(self, fact_ids: list[str]) -> int:
+        """Use-feedback: record that injected facts were actually engaged with.
+
+        The numerator of the inhibition signal — driven by a "used" detector
+        (token-reappearance / edit-content / correction-turn), which is a follow-up.
+        Returns rows updated.
+        """
+        if not fact_ids:
+            return 0
+        cur = self.db.execute(
+            f"UPDATE facts SET used_count = used_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
+            tuple(fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def add_edges(self, edges: list[tuple[str, str, str, float]]) -> int:
+        """Upsert undirected association edges ``(src_id, dst_id, kind, weight)``.
+
+        The caller normalises pair order (src < dst) so an undirected link is one row.
+        Weight accumulates on repeat (co-occurring again strengthens the link). Returns the
+        number of edge rows submitted.
+        """
+        if not edges:
+            return 0
+        self.db.executemany(
+            "INSERT INTO fact_edges (src_id, dst_id, kind, weight) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(src_id, dst_id, kind) DO UPDATE SET weight = weight + excluded.weight",
+            edges,
+        )
+        self.db.commit()
+        return len(edges)
+
+    def neighbours(self, fact_ids: list[str], limit: int = 512) -> list[tuple[str, str, float]]:
+        """Edges incident to any of ``fact_ids`` (bounded by ``limit``). Off by default —
+        only queried when spreading activation is enabled. Returns ``(src, dst, weight)``."""
+        if not fact_ids:
+            return []
+        ph = _placeholders(fact_ids)
+        rows = self.db.execute(
+            f"SELECT src_id, dst_id, weight FROM fact_edges WHERE src_id IN ({ph}) OR dst_id IN ({ph}) LIMIT ?",
+            (*fact_ids, *fact_ids, limit),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
 
     def supersede_count(self, fact_id: str) -> int:
         """How many facts this one superseded — the retention 'surprise' signal (§3A)."""
