@@ -152,7 +152,53 @@ def _print_table(results: list[dict]) -> None:
         print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
 
 
-def main(backends: list[str]) -> int:
+def evaluate_stm(data: dict, base_cfg, weights: tuple[float, ...] = (1.0, 0.5, 0.0)) -> list[dict]:
+    """Measure the ``stm_recall_weight`` lever end-to-end on the STM scenario.
+
+    Builds the scenario store once per weight (hash embedder — deterministic, no network),
+    promotes the ``ltm_indices`` facts to the long-term tier so each fresh STM gold fact
+    faces an older LTM competitor, and reports recall of the STM gold facts. As the weight
+    falls, STM recall must fall too — the measurable prerequisite for any STM-ranking default
+    change (design: STM is a state, not a faster clock)."""
+    scenario = data.get("stm_scenario")
+    if not scenario:
+        return []
+    facts, queries = scenario["facts"], scenario["queries"]
+    ltm_indices = set(scenario.get("ltm_indices", []))
+    rows_out = []
+    for weight in weights:
+        # supersede_threshold=1.0 keeps each STM fact and its near-duplicate LTM competitor
+        # both alive (else capture would retire one); min_sim=-1 ranks the full set.
+        cfg = replace(base_cfg, supersede_threshold=1.0, top_k=10, min_sim=-1.0, stm_recall_weight=weight)
+        embedder = HashEmbedding(dim=cfg.dim)
+        tmp = tempfile.mkdtemp(prefix="ltm-bench-stm-")
+        store = Store(Path(tmp) / "stm.db")
+        project = {"key": f"eval-stm-{weight}", "path": tmp, "label": "eval"}
+        service.add_facts(store, embedder, cfg, project, "eval", facts)
+        for index, text in enumerate(facts):
+            if index in ltm_indices:
+                store.db.execute("UPDATE facts SET tier='ltm' WHERE id=?", (store.fact_id(project["key"], text),))
+        store.db.commit()
+
+        def rank_fn(query: str, _cfg=cfg, _store=store, _emb=embedder, _proj=project) -> list[str]:
+            return [row["text"] for _score, row in search(_store, _emb, _proj, query, _cfg, k=10, min_sim=-1.0)]
+
+        r1, r3, mrr, _ = _score_queries(queries, facts, rank_fn)
+        store.close()
+        rows_out.append({"stm_recall_weight": weight, "stm_recall@1": r1, "stm_recall@3": r3, "stm_mrr@10": mrr})
+    return rows_out
+
+
+def _print_stm_table(rows: list[dict]) -> None:
+    cols = ["stm_recall_weight", "stm_recall@1", "stm_recall@3", "stm_mrr@10"]
+    widths = {c: max(len(c), *(len(_fmt(r[c])) for r in rows)) for c in cols}
+    print("  ".join(c.ljust(widths[c]) for c in cols))
+    print("  ".join("-" * widths[c] for c in cols))
+    for r in rows:
+        print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
+
+
+def main(backends: list[str], stm: bool = False) -> int:
     data = json.loads(DATASET.read_text(encoding="utf-8"))
     cfg = get_config()
     print(f"dataset: {len(data['facts'])} facts, {len(data['queries'])} paraphrased queries\n")
@@ -164,11 +210,17 @@ def main(backends: list[str]) -> int:
             print(f"[skipped {spec}] {exc}")
     print()
     _print_table(results)
+    if stm:
+        stm_rows = evaluate_stm(data, cfg)
+        if stm_rows:
+            print("\nSTM lever (stm_recall_weight) — recall of fresh STM gold vs older LTM competitors:\n")
+            _print_stm_table(stm_rows)
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="compare embedding backends")
     parser.add_argument("--backends", default="hash", help="comma-separated specs: name[@model][+float]")
+    parser.add_argument("--stm", action="store_true", help="also run the STM-tier lever scenario")
     args = parser.parse_args()
-    sys.exit(main([b.strip() for b in args.backends.split(",") if b.strip()]))
+    sys.exit(main([b.strip() for b in args.backends.split(",") if b.strip()], stm=args.stm))

@@ -182,17 +182,25 @@
       "min": 0,
       "max": 1
     },
-    "retention_keep_max": {
+    "integrate_threshold": {
       "type": "number",
-      "title": "Retention keep-max (prune)",
+      "title": "Integrate threshold (merge)",
+      "description": "Consolidation collapses near-duplicate short-term facts whose cosine similarity is at least this, keeping one survivor (reversible status='merged'). 0 = disabled. Below supersede_threshold clusters at the gist level; higher only collapses near-identicals. Retrieval-affecting — enable deliberately.",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    "refine_keep_max": {
+      "type": "number",
+      "title": "Refine keep-max (prune)",
       "description": "Consolidation keeps only the top-N active facts by retention score and prunes the rest. 0 = disabled. Retrieval-affecting — enable deliberately.",
       "default": 0,
       "min": 0
     },
-    "prune_threshold": {
+    "refine_prune_percentile": {
       "type": "number",
-      "title": "Retention prune threshold",
-      "description": "Consolidation prunes facts whose retention score is below this. 0 = disabled. Retrieval-affecting — enable deliberately.",
+      "title": "Refine prune percentile",
+      "description": "Consolidation prunes the lowest-retention active facts each pass. A value in (0,1) is a self-limiting percentile of the current active set (0.1 = drop the weakest 10%); a value >=1 is an absolute retention-score floor. 0 = disabled. Retrieval-affecting — enable deliberately.",
       "default": 0,
       "min": 0
     },

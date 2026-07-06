@@ -132,11 +132,13 @@ def cmd_sweep(args) -> int:
 
 def cmd_consolidate(args) -> int:
     import time
+    from collections import defaultdict
 
     from core.consolidation import consolidate
 
     cfg = get_config()
     store = Store(cfg.db_path)
+    embedder = get_embedder(cfg)  # for the integrate stage's LLM merge tier (no-op otherwise)
     now = time.time()
     if args.all:
         targets = [
@@ -147,21 +149,21 @@ def cmd_consolidate(args) -> int:
         targets = [_project(cfg, args)]
     # Route through the shared orchestrator so the CLI can't drift from the
     # checkpoint pass (bin/capture.py) — same stages, same order (replay →
-    # displace → refine → purge), each gated/idempotent/reversible.
-    totals = {"promoted": 0, "displaced": 0, "pruned": 0, "purged": 0}
+    # displace → integrate → refine → purge), each gated/idempotent/reversible.
+    # Totals are accumulated per stage the orchestrator reports, so a stage added
+    # later (e.g. `merged`) flows through to the summary without touching this code.
+    totals: dict[str, int] = defaultdict(int)
     for project in targets:
-        counts = consolidate(store, cfg, project, now)
+        counts = consolidate(store, cfg, project, now, embedder=embedder)
         for stage, n in counts.items():
             totals[stage] += n
     gated = (
         ""
-        if (cfg.retention_keep_max > 0 or cfg.prune_threshold > 0)
-        else " (pruning off — set retention_keep_max/prune_threshold)"
+        if (cfg.refine_keep_max > 0 or cfg.refine_prune_percentile > 0)
+        else " (pruning off — set refine_keep_max/refine_prune_percentile)"
     )
-    print(
-        f"consolidated {len(targets)} project(s): promoted {totals['promoted']}, "
-        f"displaced {totals['displaced']}, pruned {totals['pruned']}, purged {totals['purged']}{gated}"
-    )
+    summary = ", ".join(f"{stage} {n}" for stage, n in totals.items()) or "no stages run"
+    print(f"consolidated {len(targets)} project(s): {summary}{gated}")
     store.close()
     return 0
 
@@ -264,7 +266,7 @@ def cmd_drift(_args) -> int:
 def cmd_eval(args) -> int:
     from bench.run_eval import main as run_eval
 
-    return run_eval([b.strip() for b in args.backends.split(",") if b.strip()])
+    return run_eval([b.strip() for b in args.backends.split(",") if b.strip()], stm=args.stm)
 
 
 def cmd_demo(_args) -> int:
@@ -330,7 +332,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="sweep every project, not just the current one")
     p.set_defaults(func=cmd_sweep)
 
-    p = sub.add_parser("consolidate", help="run the sleep pass: replay (promote) + refine (prune, opt-in)")
+    p = sub.add_parser(
+        "consolidate",
+        help="run the sleep pass: replay (promote) + integrate (merge, opt-in) + refine (prune, opt-in)",
+    )
     add_cwd(p)
     p.add_argument("--all", action="store_true", help="consolidate every project, not just the current one")
     p.set_defaults(func=cmd_consolidate)
@@ -362,6 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("eval", help="benchmark embedding backends on a labelled recall set")
     p.add_argument("--backends", default="hash", help="comma-separated: hash,fastembed")
+    p.add_argument("--stm", action="store_true", help="also run the STM-tier lever (stm_recall_weight) scenario")
     p.set_defaults(func=cmd_eval)
 
     p = sub.add_parser("demo", help="capture sample facts then recall")

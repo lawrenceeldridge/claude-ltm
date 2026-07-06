@@ -469,6 +469,18 @@ class Store:
             params.append(limit)
         return self.db.execute(sql, params).fetchall()
 
+    def merge_candidates(self, project_key: str, limit: int) -> list[sqlite3.Row]:
+        """Recent active short-term facts — the integrate stage's dedup pool (newest first).
+
+        Bounded by ``limit`` so clustering stays O(limit²) off the hot path regardless of
+        store size. STM only: the fresh, not-yet-consolidated set is where near-duplicates
+        collect (cross-tier dupes are already caught by supersession at capture)."""
+        return self.db.execute(
+            "SELECT * FROM facts WHERE project_key = ? AND status = 'active' AND tier = 'stm' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (project_key, limit),
+        ).fetchall()
+
     def displace_stm(self, project_key: str, capacity: int) -> int:
         """Short-term displacement — archive the weakest active STM facts beyond ``capacity``.
 
@@ -527,13 +539,13 @@ class Store:
     def purge(self, horizon_seconds: float, now: float | None = None) -> int:
         """Two-stage lifecycle backstop — hard-delete long-archived facts, then VACUUM.
 
-        The ONLY true delete: rows already archived (superseded/displaced/pruned/expired)
-        and untouched for longer than ``horizon_seconds``. Opt-in (disabled at 0). The
-        FTS index stays in sync via the delete trigger.
+        The ONLY true delete: rows already archived (superseded/displaced/merged/pruned/
+        expired) and untouched for longer than ``horizon_seconds``. Opt-in (disabled at 0).
+        The FTS index stays in sync via the delete trigger.
         """
         cutoff = _now(now) - horizon_seconds
         cur = self.db.execute(
-            "DELETE FROM facts WHERE status IN ('superseded', 'displaced', 'pruned', 'expired') "
+            "DELETE FROM facts WHERE status IN ('superseded', 'displaced', 'merged', 'pruned', 'expired') "
             "AND COALESCE(last_seen, created_at) < ?",
             (cutoff,),
         )

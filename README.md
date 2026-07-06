@@ -28,12 +28,17 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
 ## How memory behaves (cognitive model)
 
 Standard vector search recalls stale and irrelevant facts. claude-ltm layers a
-memory lifecycle on top (details in [DESIGN.md](DESIGN.md)):
+memory lifecycle on top, drawn from the **Atkinson–Shiffrin multi-store model** and
+the **Active Systems Consolidation Hypothesis** (details, and the honest limits of the
+mapping, in [DESIGN.md](DESIGN.md)):
 
 - **Recency decay** — a fact's rank score decays exponentially with age
   (`half_life_days`) unless reinforced.
-- **Consolidation** — a fact seen again is reinforced (frequency↑, recency
-  refreshed) instead of duplicated; frequent facts rank higher and resist expiry.
+- **Rehearsal & retrieval** — two complementary ways a fact promotes from the
+  short-term to the long-term tier: *rehearsal* (re-captured past `promote_after_freq` —
+  repetition) and *retrieval* (recalled at least once — the testing effect, applied in
+  the sleep pass below). Reinforced facts (frequency↑, recency refreshed) rank higher and
+  resist expiry rather than duplicating.
 - **Context gate** — a fact is only injected if it clears a similarity threshold
   against the current prompt.
 - **Supersession** — a newer fact retires conflicting older ones. Similarity
@@ -41,10 +46,15 @@ memory lifecycle on top (details in [DESIGN.md](DESIGN.md)):
   vocabulary-disjoint conflicts ("I moved to London" → retires "I live in Paris").
 - **Hard expiry** — an optional TTL sweep archives facts unseen past `ttl_days`,
   protecting ones reinforced past `ttl_keep_frequency`.
-- **Recovery** — when the LLM distiller is unavailable, capture falls back to a
-  heuristic and flags the fact `degraded`. A later healthy session re-distils the
-  queued captures automatically, so a transient outage doesn't leave low-quality
-  facts behind permanently.
+- **Consolidation ("sleep") pass** — at session checkpoints an offline pass *replays*
+  recalled short-term facts into long-term, *displaces* short-term overflow, *integrates*
+  near-duplicates (a stdlib dedup floor, or an opt-in LLM tier that merges/abstracts a
+  cluster into one fact), and *refines* the store by pruning the lowest-retention facts.
+  Integration and forgetting are default-off and eval-gated; archival is reversible.
+- **Recovery (rescue)** — when the LLM distiller is unavailable, capture falls back to a
+  heuristic, flags the fact `degraded`, and parks the delta on a durable queue. A later
+  healthy session re-distils it automatically, so a transient outage doesn't leave
+  low-quality facts behind permanently.
 
 ## Code & docs index
 
@@ -236,8 +246,9 @@ Set via `userConfig` (or `LTM_*` env):
 | `promote_after_freq` | `2` | reinforcement count that promotes an STM fact to LTM |
 | `stm_capacity` | `0` | max active STM facts before the weakest are displaced (0 = unbounded/off) |
 | `stm_recall_weight` | `1.0` | recall weight for STM facts (1.0 = tier-agnostic; `<1` down-ranks STM) |
-| `retention_keep_max` | `0` | keep only the top-N facts by retention score, prune the rest (0 = off) |
-| `prune_threshold` | `0` | prune facts whose retention score is below this (0 = off) |
+| `integrate_threshold` | `0` | consolidation merges near-duplicate short-term facts at/above this cosine similarity, keeping one survivor (reversible; 0 = off) |
+| `refine_keep_max` | `0` | keep only the top-N facts by retention score, prune the rest (0 = off) |
+| `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor (0 = off) |
 | `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM` (0 = off) |
 
 ### Durable work queue — MemoryBus (inproc / NATS)
@@ -314,9 +325,14 @@ and reports Recall@1/@3, MRR@10, and operational cost. Backend spec is
 
 ```bash
 python3 bin/ltm eval --backends "hash,fastembed,fastembed@BAAI/bge-small-en-v1.5,fastembed+float"
+python3 bin/ltm eval --backends hash --stm    # add the STM-tier lever scenario
 ```
 
-Measured on the bundled set (18 facts, 14 paraphrased queries):
+The `--stm` scenario reports how `stm_recall_weight` trades off recall of fresh
+short-term facts against their older long-term competitors — the measurable check
+before changing any STM-ranking default (short-term is a *state*, not a faster clock).
+
+Measured on the bundled set (34 facts, 29 paraphrased queries):
 
 | backend | Recall@1 | Recall@3 | MRR@10 | bytes/fact |
 |---|---|---|---|---|
@@ -344,12 +360,13 @@ collapses them into a single project. The nearest `.ltm-root` ancestor wins.
 
 ## Status
 
-Working end to end (224 tests, 10 skipped). Defaults are local-first and
+Working end to end (240 tests, 10 skipped). Defaults are local-first and
 zero-dependency (`hash` embedding + `heuristic` fallback); real recall is opt-in
 via `fastembed` (bge-base, self-provisioning venv) and, for best quality, an LLM
 distiller (`distiller=claude` on Haiku by default, or `distiller=ollama` for
 zero-token local). The memory lifecycle adds explicit STM/LTM tiers with
-rehearsal-based promotion and a consolidation ("sleep") pass; capture and recovery
+rehearsal- and retrieval-based promotion and a consolidation ("sleep") pass (replay →
+displace → integrate near-duplicates → refine/forget → purge); capture and recovery
 run through a durable work queue — a zero-dependency `inproc` SQLite queue by default,
 or opt-in NATS JetStream (auto-provisioned, fail-open to `inproc`). See
 [DESIGN.md](DESIGN.md) for the full architecture, POEAA pattern choices, caching

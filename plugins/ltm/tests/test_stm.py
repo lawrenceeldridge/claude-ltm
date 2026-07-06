@@ -233,6 +233,22 @@ class StmTierTests(unittest.TestCase):
         score_ltm = self._score_of(fid, "daemon model warm", cfg)
         self.assertAlmostEqual(score_stm, score_ltm * 0.5, places=6)
 
+    def test_stm_eval_scenario_lever_is_monotonic(self):
+        # The bench STM scenario must show stm_recall_weight demoting fresh STM facts as it
+        # falls — the measurable prerequisite (Q5) before any STM-ranking default change.
+        import json as _json
+
+        from bench.run_eval import DATASET, evaluate_stm
+
+        data = _json.loads(DATASET.read_text(encoding="utf-8"))
+        rows = evaluate_stm(data, self.cfg, weights=(1.0, 0.5, 0.0))
+        self.assertEqual([r["stm_recall_weight"] for r in rows], [1.0, 0.5, 0.0])
+        r1 = [r["stm_recall@1"] for r in rows]
+        mrr = [r["stm_mrr@10"] for r in rows]
+        self.assertTrue(all(a >= b for a, b in zip(r1, r1[1:])), r1)  # non-increasing
+        self.assertTrue(all(a >= b for a, b in zip(mrr, mrr[1:])), mrr)
+        self.assertGreater(r1[0], r1[-1])  # weight 1.0 clearly beats 0.0
+
     def _score_of(self, fid: str, query: str, cfg=None) -> float:
         hits = search(self.store, self.embedder, self.project, query, cfg or self.cfg, min_sim=-1.0)
         return next(score for score, row in hits if row["id"] == fid)

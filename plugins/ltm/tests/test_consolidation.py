@@ -104,7 +104,7 @@ class StageTests(unittest.TestCase):
     def test_refine_keep_max_prunes_weakest(self):
         for i in range(5):
             self._add(f"fact {i}")
-        cfg = replace(self.cfg, retention_keep_max=3)
+        cfg = replace(self.cfg, refine_keep_max=3)
         pruned = refine(self.store, cfg, self.project)
         self.assertEqual(pruned, 2)
         self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 3)
@@ -112,10 +112,37 @@ class StageTests(unittest.TestCase):
     def test_refine_threshold_prunes_below_floor(self):
         for i in range(3):
             self._add(f"fact {i}")
-        cfg = replace(self.cfg, prune_threshold=10.0)  # absurdly high -> everything is below
+        cfg = replace(self.cfg, refine_prune_percentile=10.0)  # >=1 raw floor, absurdly high -> everything is below
         pruned = refine(self.store, cfg, self.project)
         self.assertEqual(pruned, 3)
         self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 0)
+
+    def test_refine_percentile_prunes_weakest_fraction(self):
+        for i in range(10):
+            self._add(f"fact {i}")
+        cfg = replace(self.cfg, refine_prune_percentile=0.2)  # 0<p<1 -> drop weakest 20%
+        pruned = refine(self.store, cfg, self.project)
+        self.assertEqual(pruned, 2)  # ceil(0.2 * 10)
+        self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 8)
+
+    def test_refine_percentile_converges_per_pass(self):
+        # Percentile mode is applied per pass (cohort-relative), so a repeat prunes further —
+        # self-limiting and stateless, but not strictly idempotent (documented in refine.py).
+        for i in range(10):
+            self._add(f"fact {i}")
+        cfg = replace(self.cfg, refine_prune_percentile=0.2)
+        self.assertEqual(refine(self.store, cfg, self.project), 2)  # 10 -> 8
+        self.assertEqual(refine(self.store, cfg, self.project), 2)  # 8 -> 6 (ceil(0.2*8))
+        self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 6)
+
+    def test_refine_keep_max_is_idempotent(self):
+        # Absolute count -> a second pass finds exactly N active and prunes nothing more.
+        for i in range(5):
+            self._add(f"fact {i}")
+        cfg = replace(self.cfg, refine_keep_max=3)
+        self.assertEqual(refine(self.store, cfg, self.project), 2)
+        self.assertEqual(refine(self.store, cfg, self.project), 0)
+        self.assertEqual(len(self.store.active_rows_for_project(self.project["key"])), 3)
 
     # --- purge (two-stage lifecycle) ---
 
