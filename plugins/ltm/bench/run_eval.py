@@ -133,7 +133,24 @@ def evaluate(spec: str, data: dict, base_cfg) -> dict:
         "embed_ms/fact": embed_ms / len(facts),
         "query_ms": query_ms,
         "bytes/fact": bytes_per_fact,
+        "n": len(queries),
     }
+
+
+def wilson(k: float, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score 95% interval for a proportion ``k/n``. Honest at small n and near 0/1.
+
+    ``k`` is passed as a float (rate*n rounded) since the caller carries rates, not counts.
+    Returns ``(lo, hi)``; a zero-width span for ``n == 0``.
+    """
+    if n <= 0:
+        return 0.0, 0.0
+    k = max(0.0, min(float(n), round(k)))
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 def _fmt(value) -> str:
@@ -152,6 +169,21 @@ def _print_table(results: list[dict]) -> None:
     print("  ".join("-" * widths[c] for c in cols))
     for r in results:
         print("  ".join(_fmt(r[c]).ljust(widths[c]) for c in cols))
+
+
+def _print_ci(results: list[dict]) -> None:
+    """Report the Wilson 95% interval on the headline proportions, so between-backend
+    deltas are read against the sample's resolution (see the ltm-design statistics ref)."""
+    if not results:
+        return
+    print("\n95% Wilson intervals (proportion metrics):")
+    for r in results:
+        n = r.get("n", 0)
+        parts = []
+        for metric in ("recall@1", "recall@3"):
+            lo, hi = wilson(r[metric] * n, n)
+            parts.append(f"{metric} {r[metric]:.3f} [{lo:.3f}, {hi:.3f}]")
+        print(f"  {r['backend']} (n={n}): " + "  ".join(parts))
 
 
 def evaluate_stm(data: dict, base_cfg, weights: tuple[float, ...] = (1.0, 0.5, 0.0)) -> list[dict]:
@@ -259,6 +291,7 @@ def main(backends: list[str], stm: bool = False, antipatterns: bool = False) -> 
             print(f"[skipped {spec}] {exc}")
     print()
     _print_table(results)
+    _print_ci(results)
     if stm:
         stm_rows = evaluate_stm(data, cfg)
         if stm_rows:
