@@ -119,23 +119,43 @@ If a plan artifact exists under `docs/generated/` for this work, use it as the p
 source for purpose/testing/impact. Otherwise draft those sections from the commits and
 changed files.
 
-### Step 3: Pre-push checks
+### Step 3: Bump the version if this PR ships
+
+**Part of every shipping PR — not a separate release chore.** If the branch changes
+shipped plugin behaviour (a `feat` / `fix` / `perf` touching `plugins/ltm/**`), bump
+`version` in **both** `plugins/ltm/.claude-plugin/plugin.json` and
+`.claude-plugin/marketplace.json`, kept in sync (`feat` → minor, `fix`/`perf` → patch,
+breaking → major). Docs-only, `test`, `chore`, `ci`, and dev-tooling (`.claude/**`,
+`CLAUDE.md`) PRs skip this.
+
+Edit the manifests **by hand — never `ruff format` them** (it rewrites JSON with trailing
+commas → invalid). Why it's mandatory, not optional: the `claude-ltm` marketplace source
+is a **local directory**, so an installed plugin only re-fetches its code when the
+advertised version changes — skip the bump and the feature ships *dead* (it did: the
+version froze at `0.13.1` across #10–#16). Full rationale + tag/`/plugin`-update flow:
+[`references/conventions.md` § Releasing](references/conventions.md#releasing-version-bump--tag).
+
+### Step 4: Pre-push checks
 
 There is no `just` here — checks are plain commands, run from `plugins/ltm/`:
 
 ```bash
 cd plugins/ltm
-ruff check . && ruff format --check .        # lint + format (non-mutating check)
+ruff check .                                 # lint (tree-wide)
+ruff format --check $(cd .. && git diff main...HEAD --name-only -- 'plugins/ltm/**' | sed 's#plugins/ltm/##')
 python3 -m unittest discover -s tests        # test suite (all stdlib)
 ```
 
-If anything fails: fix it, commit the fix (`fix(ltm): resolve lint errors` etc.), and
-re-run. **Do NOT push until ruff and the tests pass.** If a change touches embeddings,
-ranking, quantisation, or distillation, also run `python3 bin/ltm eval --backends hash`
-and confirm no regression (see [`.claude/rules`](../../rules/) and README § Benchmarking).
-See `references/troubleshooting.md` for common failures.
+Format-check the files **your branch changed**, not the whole tree: `ruff format --check .`
+can flag pre-existing drift you didn't touch, and it false-positives on the JSON manifests
+(see Step 3) — neither is a reason to reformat. If anything fails: fix it, commit the fix
+(`fix(ltm): resolve lint errors` etc.), and re-run. **Do NOT push until ruff and the tests
+pass.** If a change touches embeddings, ranking, quantisation, or distillation, also run
+`python3 bin/ltm eval --backends hash` and confirm no regression (see
+[`.claude/rules`](../../rules/) and README § Benchmarking). See
+`references/troubleshooting.md` for common failures.
 
-### Step 4: Push the branch
+### Step 5: Push the branch
 
 ```bash
 git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null   # upstream?
@@ -143,7 +163,7 @@ git push -u origin "$(git branch --show-current)"                  # first push
 git push                                                           # subsequent pushes
 ```
 
-### Step 5: Create the PR
+### Step 6: Create the PR
 
 Derive `<type>` and `<scope>` from the diff the same way commit mode does. Use the body
 template from [`references/conventions.md`](references/conventions.md#pr-body-template)
@@ -262,10 +282,12 @@ scope `core` and type `perf` for an int8 pre-filter, commits
 
 **User says:** `/ltm-git pr-create`
 
-**Result:** Confirms the branch is `feat/consult-first-gate` (not `main`), runs
-`ruff check`, `ruff format --check`, and the unittest suite from `plugins/ltm/`, pushes
-with `-u`, opens a PR titled `feat(ltm): consult-first gate` with the purpose / testing /
-token-impact body — no Linear line.
+**Result:** Confirms the branch is `feat/consult-first-gate` (not `main`); since it's a
+`feat` touching `plugins/ltm/**`, bumps `plugin.json` + `marketplace.json` (e.g. `0.14.0`
+→ `0.15.0`) in the same PR; runs `ruff check`, `ruff format --check` on the branch's
+changed files, and the unittest suite from `plugins/ltm/`; pushes with `-u`; opens a PR
+titled `feat(ltm): consult-first gate` with the purpose / testing / token-impact body —
+no Linear line.
 
 ### Example 3: Merge and report
 

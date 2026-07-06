@@ -219,19 +219,42 @@ gh pr merge <number> --squash --delete-branch
 
 ## Releasing (version bump + tag)
 
-There is **no release-please**. A release is a small manual step:
+There is **no release-please**, so the version bump is manual — but it is **not
+optional**. **Every PR that changes shipped plugin behaviour bumps the version in the
+same PR.** "Shipped behaviour" = a `feat` / `fix` / `perf` touching `plugins/ltm/**`.
+Docs-only, `test`, `chore`, `ci`, and dev-tooling (`.claude/**`, `CLAUDE.md`) PRs do
+**not** bump.
+
+**Why this is a habit, not a footnote (learned the hard way):** the `claude-ltm`
+marketplace source is a **local directory**, so an installed plugin only re-fetches
+its code when the **advertised version changes**. Ship a feature without a bump and
+every installed plugin keeps running the *old* code — the new behaviour is on `main`
+but dead in every session. This is exactly what happened: the version sat frozen at
+`0.13.1` across #10–#16, so the anti-pattern feature was invisible until a `0.14.0`
+bump (#17) forced the update. Treat "did I bump?" as part of the PR, like tests.
+
+Steps:
 
 1. Bump `version` in **both**
    [`plugins/ltm/.claude-plugin/plugin.json`](../../../../plugins/ltm/.claude-plugin/plugin.json)
-   and [`.claude-plugin/marketplace.json`](../../../../.claude-plugin/marketplace.json) —
-   keep them in sync (semver: `feat` → minor, `fix`/`perf` → patch, breaking → major).
-2. Commit: `chore(ltm): release vX.Y.Z` (or fold into the feature PR).
+   and [`.claude-plugin/marketplace.json`](../../../../.claude-plugin/marketplace.json),
+   kept in sync (semver: `feat` → minor, `fix`/`perf` → patch, breaking → major).
+   ⚠️ **Edit these JSON files by hand — never `ruff format` them.** `ruff format`
+   rewrites JSON with trailing commas, producing invalid JSON. `ruff format --check .`
+   will also *report* the manifests as "would reformat"; that is a false positive, not
+   a reason to reformat them.
+2. Commit **in the feature PR itself** (default): `chore(ltm): bump 0.13.1 → 0.14.0`, or
+   fold the bump into the feature commit. A standalone `chore(ltm): release vX.Y.Z` PR is
+   only for catching up a missed bump.
 3. After merge to `main`, tag and push the tag:
    ```bash
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
 4. Optionally cut a GitHub release: `gh release create vX.Y.Z --generate-notes`.
+5. **The bump alone does not update a running plugin** — a restart refreshes marketplace
+   *metadata* only. To actually pick up the new version, update via the `/plugin` manager
+   (a user action; the interactive UI can't be driven by a hook or the CLI), then restart.
 
 Keep README's config table in sync with `plugin.json` when defaults change.
 
