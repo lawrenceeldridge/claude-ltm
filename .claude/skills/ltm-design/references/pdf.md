@@ -62,6 +62,34 @@ relative to itself, so it works from any working directory, and sets pandoc's
 The paper's own YAML metadata block (`title`, `author`, `date`, `abstract`) drives the
 title block and abstract — see [`../assets/paper_template.md`](../assets/paper_template.md).
 
+### Margin discipline (code blocks and wide tables)
+
+`header.tex` wraps every verbatim/code block (`fvextra`, `breaklines` +
+`breakanywhere`) at `\footnotesize`, so a long line can no longer run past the right
+margin; `\emergencystretch` absorbs long inline code the same way. Wrapping is the
+*safety net*, not the goal — a wrapped benchmark table is in-margin but ugly. Pick the
+right mechanism per block:
+
+- **Body code blocks (Method, Results):** keep lines at **≤ 100 characters**; prefer
+  several narrow blocks over one wide one, and backslash-continue long commands.
+- **Raw-output appendices (the preferred fix for wide harness output):** put the
+  appendix on landscape pages rather than editing the raw output — wrap the section in
+  raw LaTeX markers in the markdown:
+
+  ```
+  \begin{landscape}
+
+  # Appendix A: Raw experimental output {-}
+  ...code blocks up to ~160 characters wide fit here...
+
+  \end{landscape}
+  ```
+
+  (`pdflscape` is loaded by `header.tex`; pandoc passes the raw LaTeX through.)
+- **Check the built PDF visually before publishing** — page through it (the appendix
+  pages carry the widest content) and treat any clipped or wrapped line as a defect to
+  fix in the source, not to ship.
+
 To restyle a single paper without editing the shared assets, add LaTeX to that paper's
 metadata (`header-includes:`); to change the house style for all papers, edit the two
 `assets/pandoc/` files.
