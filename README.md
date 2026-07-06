@@ -180,6 +180,7 @@ ltm prune               delete all memory for the current project
 ltm sweep [--all]       archive stale facts (TTL expiry; --days N to override)
 ltm consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
 ltm nats status|start|stop  manage the opt-in NATS server (bus=nats)
+ltm queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
 ltm daemon              run the resident daemon (keeps the embedder warm)
 ltm viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
 ltm stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
@@ -270,6 +271,7 @@ it is safe. Set via `userConfig` (or `LTM_*` env):
 | `bus_max_deliver` | `5` | delivery attempts before a work item is dead-lettered |
 | `bus_backoff` | `5,30,120,600` | retry backoff schedule, seconds (comma-separated) |
 | `lease_ttl` | `300` | seconds a claimed item is leased before reclaim (crash recovery) |
+| `bus_dead_after` | `604800` | dead-letter a pending item unprocessed this long (7 days); 0 disables. Inspect/clear with `ltm queue` |
 | `nats_url` | `nats://localhost:4222` | NATS URL — use a dedicated port so ltm doesn't share another server |
 | `nats_stream` | `LTM_WORK` | JetStream stream name |
 | `nats_provision` | `binary` | auto-start NATS: `binary` (download nats-server), `docker`, or `off` (bring your own) |

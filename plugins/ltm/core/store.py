@@ -690,6 +690,30 @@ class Store:
             (project_key, limit),
         ).fetchall()
 
+    def recent_work(self, limit: int = 50) -> list[sqlite3.Row]:
+        """Work-queue rows across all projects, newest first — the `ltm queue` inspection view."""
+        return self.db.execute(
+            "SELECT * FROM work_queue ORDER BY enqueued_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def purge_work(self, status: str | None = None, stage: str | None = None) -> int:
+        """Delete work-queue rows, optionally filtered by status and/or stage. Returns count.
+
+        The maintenance op behind `ltm queue purge` — clears a backlog/DLQ that can't or
+        shouldn't be retried. With no filter it empties the queue entirely."""
+        sql = "DELETE FROM work_queue WHERE 1=1"
+        params: list = []
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        if stage is not None:
+            sql += " AND stage = ?"
+            params.append(stage)
+        cur = self.db.execute(sql, params)
+        self.db.commit()
+        return cur.rowcount
+
     def active_rows(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM facts WHERE status = 'active'").fetchall()
 
@@ -1135,6 +1159,30 @@ class Store:
             "UPDATE work_queue SET status = 'pending', lease_owner = NULL, lease_expires = 0 "
             "WHERE status = 'in_progress' AND lease_expires < ?",
             (now,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def pending_work(self, limit: int = 500) -> list[sqlite3.Row]:
+        """Pending/interrupted items across all stages+projects — the set to migrate on a
+        bus-backend switch (dead rows are left; they're the DLQ). Oldest first."""
+        return self.db.execute(
+            "SELECT * FROM work_queue WHERE status IN ('pending', 'in_progress') "
+            "ORDER BY enqueued_at ASC, rowid ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def dead_stale(self, horizon_seconds: float, now: float | None = None) -> int:
+        """Dead-letter pending items older than the horizon — a backstop so an item no active
+        backend ever pulls (e.g. parked on inproc after a switch to nats) can't live forever.
+        Kept for inspection (``status='dead'``), not deleted. Disabled at ``horizon<=0``."""
+        if horizon_seconds <= 0:
+            return 0
+        cutoff = _now(now) - horizon_seconds
+        cur = self.db.execute(
+            "UPDATE work_queue SET status = 'dead', lease_owner = NULL, lease_expires = 0 "
+            "WHERE status = 'pending' AND enqueued_at < ?",
+            (cutoff,),
         )
         self.db.commit()
         return cur.rowcount

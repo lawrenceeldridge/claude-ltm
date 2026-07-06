@@ -246,6 +246,40 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_queue(args) -> int:
+    import time
+    from collections import Counter
+
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    try:
+        if args.purge_all:
+            print(f"purged {store.purge_work()} work item(s) (all)")
+            return 0
+        if args.purge_dead:
+            print(f"purged {store.purge_work(status='dead')} work item(s) (dead-letter)")
+            return 0
+        if args.purge_stage:
+            print(f"purged {store.purge_work(stage=args.purge_stage)} work item(s) (stage={args.purge_stage})")
+            return 0
+        total = store.count_work()
+        parts = [f"{s} {store.count_work(status=s)}" for s in ("pending", "in_progress", "dead")]
+        print(f"work queue: {total} total  —  {', '.join(parts)}")
+        if total:
+            rows = store.recent_work(20) if args.all else store.work_items(_project(cfg, args)["key"], 20)
+            by_stage = Counter(r["stage"] for r in rows)
+            print("by stage:", ", ".join(f"{s} {n}" for s, n in by_stage.items()) or "(none)")
+            now = time.time()
+            for r in rows:
+                age = (now - (r["enqueued_at"] or now)) / 86400
+                print(
+                    f"  {r['status']:<11} {r['stage']:<10} attempts={r['attempts']} age={age:.1f}d {r['msg_id'][:28]}"
+                )
+        return 0
+    finally:
+        store.close()
+
+
 def cmd_drift(_args) -> int:
     from core.index.drift import check, pin
 
@@ -362,6 +396,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_cwd(p)
     p.add_argument("--all", action="store_true", help="aggregate across every project")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("queue", help="inspect / purge the durable work queue (rescue backlog + dead-letter)")
+    add_cwd(p)
+    p.add_argument("--all", action="store_true", help="list across every project (default: current)")
+    p.add_argument("--purge-dead", action="store_true", help="delete dead-lettered items")
+    p.add_argument("--purge-stage", metavar="STAGE", help="delete items of a stage (e.g. rescue)")
+    p.add_argument("--purge-all", action="store_true", help="delete ALL work items")
+    p.set_defaults(func=cmd_queue)
 
     p = sub.add_parser("drift", help="pin/check the embedding-drift canary")
     p.set_defaults(func=cmd_drift)

@@ -87,6 +87,7 @@ def get_bus(cfg, store) -> MemoryBus:
 
             bus = NatsBus(cfg, store)
             bus.connect()  # connect now so a dead server fails open here, not mid-capture
+            _drain_inproc_into(bus, store)  # migrate items parked on inproc during a nats outage
             return bus
         except Exception:
             if bus is not None:
@@ -94,3 +95,31 @@ def get_bus(cfg, store) -> MemoryBus:
     from core.adapters.inproc_bus import InprocBus
 
     return InprocBus(cfg, store)
+
+
+def _drain_inproc_into(bus: MemoryBus, store, cap: int = 500) -> int:
+    """Migrate pending inproc SQLite work into the active (nats) backend on a switch.
+
+    Items enqueued while nats was unreachable land in the inproc ``work_queue`` (fail-open);
+    once nats is active, rescue pulls from JetStream and would never see them. Republish each
+    (idempotent on ``msg_id``) then delete the inproc row. Fail-open **per item** so a publish
+    error just leaves that row for next time — never loses or double-processes work.
+    """
+    migrated = 0
+    for row in store.pending_work(cap):
+        try:
+            bus.publish(
+                WorkItem(
+                    stage=row["stage"],
+                    project_key=row["project_key"],
+                    msg_id=row["msg_id"],
+                    session_id=row["session_id"] or "",
+                    ref=row["ref"] or "",
+                    payload=row["payload"] or "",
+                )
+            )
+        except Exception:
+            continue  # leave the row on inproc; try again on the next bus construction
+        store.ack_work(row["msg_id"])  # remove the migrated inproc row
+        migrated += 1
+    return migrated

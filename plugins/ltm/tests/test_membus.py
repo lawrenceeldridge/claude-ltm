@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.adapters.inproc_bus import InprocBus  # noqa: E402
 from core.config import get_config  # noqa: E402
-from core.ports.membus import MemoryBus, WorkItem, get_bus  # noqa: E402
+from core.ports.membus import MemoryBus, WorkItem, _drain_inproc_into, get_bus  # noqa: E402
 from core.store import Store  # noqa: E402
 
 
@@ -96,6 +96,86 @@ class WorkQueueStoreTests(unittest.TestCase):
         self._enqueue("b", stage="consolidate")
         rows = self.store.claim_work("distill", 10, now=100.0)
         self.assertEqual([r["msg_id"] for r in rows], ["a"])
+
+    def test_pending_work_excludes_dead(self):
+        self._enqueue("m1")
+        self._enqueue("m2")
+        self.store.dead_work("m2")
+        self.assertEqual([r["msg_id"] for r in self.store.pending_work()], ["m1"])
+
+    def test_dead_stale_dead_letters_old_pending_only(self):
+        self._enqueue("old", now=100.0)
+        self._enqueue("new", now=1000.0)
+        # horizon 500s at now=1000 → cutoff 500; 'old' (100) is stale, 'new' (1000) is not.
+        self.assertEqual(self.store.dead_stale(500.0, now=1000.0), 1)
+        self.assertEqual(self.store.count_work(status="dead"), 1)
+        self.assertEqual(self.store.count_work(status="pending"), 1)
+
+    def test_dead_stale_disabled_at_zero(self):
+        self._enqueue("m1", now=1.0)
+        self.assertEqual(self.store.dead_stale(0.0, now=10**9), 0)
+        self.assertEqual(self.store.count_work(status="pending"), 1)
+
+    def test_recent_work_all_projects_newest_first(self):
+        self.store.enqueue_work(msg_id="a", stage="rescue", project_key="p1", now=100.0)
+        self.store.enqueue_work(msg_id="b", stage="rescue", project_key="p2", now=200.0)
+        self.assertEqual([r["msg_id"] for r in self.store.recent_work()], ["b", "a"])
+
+    def test_purge_work_by_status_stage_and_all(self):
+        self._enqueue("d1")
+        self._enqueue("d2")
+        self._enqueue("keep", stage="consolidate")
+        self.store.dead_work("d1")
+        self.store.dead_work("d2")
+        self.assertEqual(self.store.purge_work(status="dead"), 2)  # only dead-lettered
+        self.assertEqual(self.store.count_work(), 1)
+        self.assertEqual(self.store.purge_work(stage="consolidate"), 1)  # by stage
+        self.assertEqual(self.store.count_work(), 0)
+        self._enqueue("x")
+        self.assertEqual(self.store.purge_work(), 1)  # no filter → empties
+
+
+class DrainTests(unittest.TestCase):
+    """Bus-switch reconciliation — inproc pendings migrate into the active backend."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LTM_DATA_DIR"] = self.tmp.name
+        self.store = Store(get_config().db_path)
+
+    def tearDown(self):
+        self.store.close()
+        os.environ.pop("LTM_DATA_DIR", None)
+        self.tmp.cleanup()
+
+    def test_drain_migrates_and_clears_inproc(self):
+        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key="p", payload="x")
+        self.store.enqueue_work(msg_id="m2", stage="rescue", project_key="p")
+        published: list[str] = []
+
+        class _FakeBus(MemoryBus):
+            def publish(self, item):
+                published.append(item.msg_id)
+
+            def pull(self, stage, max_items=16):
+                return []
+
+        self.assertEqual(_drain_inproc_into(_FakeBus(), self.store), 2)
+        self.assertEqual(sorted(published), ["m1", "m2"])
+        self.assertEqual(self.store.count_work(), 0)  # inproc rows removed after migration
+
+    def test_drain_leaves_row_when_publish_fails(self):
+        self.store.enqueue_work(msg_id="m1", stage="rescue", project_key="p")
+
+        class _FailBus(MemoryBus):
+            def publish(self, item):
+                raise RuntimeError("nats down mid-drain")
+
+            def pull(self, stage, max_items=16):
+                return []
+
+        self.assertEqual(_drain_inproc_into(_FailBus(), self.store), 0)
+        self.assertEqual(self.store.count_work(status="pending"), 1)  # left for the next attempt
 
 
 class InprocBusTests(unittest.TestCase):
