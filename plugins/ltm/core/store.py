@@ -359,6 +359,20 @@ def _v13_usage(db: sqlite3.Connection) -> None:
     )
 
 
+def _v14_outcomes(db: sqlite3.Connection) -> None:
+    # Use-feedback tallies (Engle/Kane executive attention): how often a fact was injected
+    # into the focus vs actually engaged with. Feeds the retention-score inhibition term.
+    # Additive, default 0; the inhibition weight stays 0 until a "used" detector is wired,
+    # so these accumulate for that follow-up without affecting ranking yet.
+    _add_columns(
+        db,
+        [
+            ("injected_count", "injected_count INTEGER NOT NULL DEFAULT 0"),
+            ("used_count", "used_count INTEGER NOT NULL DEFAULT 0"),
+        ],
+    )
+
+
 def _v12_index_meta(db: sqlite3.Connection) -> None:
     # Human name for a project's index. The index keys on hash(path) and stores only
     # relative source paths, so a project with chunks but no memory facts had nothing
@@ -392,6 +406,7 @@ _MIGRATIONS = [
     _v11_rescue_from_redistill,
     _v12_index_meta,
     _v13_usage,
+    _v14_outcomes,
 ]
 _SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -517,6 +532,38 @@ class Store:
         cur = self.db.execute(
             f"UPDATE facts SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
             (stamp, *fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def mark_injected(self, fact_ids: list[str]) -> int:
+        """Use-feedback: record that facts were injected into the focus (Engle/Kane).
+
+        The denominator of the inhibition signal. Off the interactive hot path in the
+        current design (wiring the injection tally into recall is a follow-up); safe to call
+        wherever injected ids are known. Returns rows updated.
+        """
+        if not fact_ids:
+            return 0
+        cur = self.db.execute(
+            f"UPDATE facts SET injected_count = injected_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
+            tuple(fact_ids),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def mark_used(self, fact_ids: list[str]) -> int:
+        """Use-feedback: record that injected facts were actually engaged with.
+
+        The numerator of the inhibition signal — driven by a "used" detector
+        (token-reappearance / edit-content / correction-turn), which is a follow-up.
+        Returns rows updated.
+        """
+        if not fact_ids:
+            return 0
+        cur = self.db.execute(
+            f"UPDATE facts SET used_count = used_count + 1 WHERE id IN ({_placeholders(fact_ids)})",
+            tuple(fact_ids),
         )
         self.db.commit()
         return cur.rowcount

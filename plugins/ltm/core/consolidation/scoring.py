@@ -32,6 +32,11 @@ class RetentionWeights:
     depth: float = 0.1
     surprise: float = 0.1
     frequency: float = 0.2
+    # Use-feedback inhibition (Engle/Kane executive attention): penalise a fact injected into
+    # the focus but never engaged with. Default 0 → inert. Raising it REQUIRES the "used" signal
+    # wired (token-reappearance / edit-content / correction-turn); until then used_count stays 0
+    # and every injected fact reads as unused, so it must remain 0 without that wiring.
+    inhibition: float = 0.0
 
 
 # Authoritative default weights. Tuned by `ltm eval` before pruning is enabled
@@ -50,12 +55,25 @@ class RetentionFeatures:
     depth: float = 0.0  # 0..1 encoding richness (distiller structure present)
     surprise: int = 0  # number of facts this one superseded
     salience: float = 0.0  # corrections / reward proxy (v2)
+    inhibition: float = 0.0  # 0..1 unused-exposure penalty (use-feedback inhibition)
 
 
 def depth_of(row) -> float:
     """Encoding richness (levels of processing): fraction of {title, narrative, type} present."""
     present = sum(1 for col in ("title", "narrative", "type") if (row[col] if col in row.keys() else None))
     return present / 3.0
+
+
+def inhibition_signal(injected: int, used: int) -> float:
+    """Fraction of injections that went unused, in [0, 1]. Pure.
+
+    0 when never injected (nothing to penalise) or always used; → 1 as a fact is injected
+    repeatedly without engagement. This is the Engle/Kane "resist the irrelevant" signal;
+    the shell supplies the injected/used tallies (store columns), this module only does math.
+    """
+    if injected <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (injected - used) / injected))
 
 
 def features_from_row(row, *, surprise: int = 0) -> RetentionFeatures:
@@ -68,6 +86,10 @@ def features_from_row(row, *, surprise: int = 0) -> RetentionFeatures:
         depth=depth_of(row),
         surprise=surprise,
         salience=0.0,
+        inhibition=inhibition_signal(
+            row["injected_count"] if "injected_count" in row.keys() else 0,
+            row["used_count"] if "used_count" in row.keys() else 0,
+        ),
     )
 
 
@@ -85,6 +107,7 @@ def retention(
     salience = max(0.0, min(1.0, f.salience))
     surprise = frequency_boost(f.surprise + 1)
     freq = frequency_boost(f.frequency)
+    inhibition = max(0.0, min(1.0, f.inhibition))
     w = weights
     return (
         w.use * use
@@ -93,4 +116,5 @@ def retention(
         + w.depth * depth
         + w.surprise * surprise
         + w.frequency * freq
+        - w.inhibition * inhibition  # penalty: injected-but-unused de-ranks a fact for pruning
     )
