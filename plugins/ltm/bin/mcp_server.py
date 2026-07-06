@@ -105,9 +105,12 @@ TOOLS = [
                     "type": "string",
                     "description": "The section anchor (e.g. 'installation/prerequisites') or id.",
                 },
+                "anchor": {
+                    "type": "string",
+                    "description": "Alias for `ref` — the `anchor` from search_docs/doc_outline.",
+                },
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
             },
-            "required": ["ref"],
         },
     },
     {
@@ -162,9 +165,12 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "ref": {"type": "string", "description": "The symbol anchor (dotted qualname) or id."},
+                "anchor": {
+                    "type": "string",
+                    "description": "Alias for `ref` — the `anchor` from search_code/code_outline.",
+                },
                 "project": {"type": "string", "description": "Optional project label/path; defaults to current."},
             },
-            "required": ["ref"],
         },
     },
     {
@@ -347,7 +353,7 @@ class _Engine:
         from core.index.index_recall import get_chunk
 
         project = self._project(args.get("project"))
-        res = get_chunk(self.store, project, args.get("ref") or "")
+        res = get_chunk(self.store, project, args.get("ref") or args.get("anchor") or "")
         self._record_pull(project, res, "pull_doc")
         return res
 
@@ -356,7 +362,7 @@ class _Engine:
         from core.index.index_recall import get_chunk
 
         project = self._project(args.get("project"))
-        res = get_chunk(self.store, project, args.get("ref") or "")
+        res = get_chunk(self.store, project, args.get("ref") or args.get("anchor") or "")
         self._record_pull(project, res, "pull_symbol")
         return res
 
