@@ -935,6 +935,36 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    def delete_project(self, project_key: str) -> dict[str, int]:
+        """Erase every trace of a project across all tables, in one transaction.
+
+        A project appears in the viewer if it has memory facts *or* index chunks, so a
+        clean removal must wipe both plus the cross-cutting tables (work queue, telemetry,
+        cursors, index label). Returns per-table row counts for reporting. Orphaned
+        ``fact_edges`` (edges whose endpoints are gone) are swept globally after the
+        facts delete. Destructive and irreversible — the caller confirms intent.
+        """
+        counts: dict[str, int] = {}
+        with self.db:
+            counts["facts"] = self.db.execute("DELETE FROM facts WHERE project_key = ?", (project_key,)).rowcount
+            counts["chunks"] = self.db.execute("DELETE FROM chunks WHERE project_key = ?", (project_key,)).rowcount
+            self.db.execute("DELETE FROM chunk_sources WHERE project_key = ?", (project_key,))
+            counts["work_queue"] = self.db.execute(
+                "DELETE FROM work_queue WHERE project_key = ?", (project_key,)
+            ).rowcount
+            self.db.execute("DELETE FROM pending_redistill WHERE project_key = ?", (project_key,))
+            self.db.execute("DELETE FROM recall_events WHERE project_key = ?", (project_key,))
+            self.db.execute("DELETE FROM usage_events WHERE project_key = ?", (project_key,))
+            self.db.execute("DELETE FROM index_meta WHERE project_key = ?", (project_key,))
+            # cursor_key is "{project_key}:{session}" — match this project's cursors by prefix.
+            self.db.execute("DELETE FROM capture_cursors WHERE cursor_key LIKE ? || ':%'", (project_key,))
+            # Sweep edges left dangling by the facts delete (edges are keyed by fact id, not project).
+            self.db.execute(
+                "DELETE FROM fact_edges WHERE src_id NOT IN (SELECT id FROM facts) "
+                "OR dst_id NOT IN (SELECT id FROM facts)"
+            )
+        return counts
+
     def log_recall(
         self,
         project_key: str,

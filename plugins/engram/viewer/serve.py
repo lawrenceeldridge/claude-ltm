@@ -47,6 +47,9 @@ PAGE = """<!doctype html>
   select,input { background:var(--bg); color:var(--fg); border:1px solid var(--border2);
                  border-radius:8px; padding:7px 10px; font:inherit; }
   input { flex:1; min-width:180px; }
+  #delproj { background:var(--bg); border:1px solid var(--border2); border-radius:8px; padding:6px 9px;
+             font-size:13px; line-height:1; cursor:pointer; color:var(--muted); transition:border-color .15s,color .15s; }
+  #delproj:hover { border-color:#da3633; color:#f85149; }
   main { padding:22px 16px 80px; }             /* cards span the full width */
   .card { position:relative; background:var(--card); border:1px solid var(--border);
           border-radius:var(--radius); padding:16px 20px; margin-bottom:12px; transition:border-color .15s; }
@@ -59,6 +62,7 @@ PAGE = """<!doctype html>
   .badge[data-type=bugfix]{background:#da3633}  .badge[data-type=refactor]{background:#1f6feb}
   .badge[data-type=decision]{background:#9e6a03} .badge[data-type=discovery]{background:#57606a}
   .badge[data-type=session_summary]{background:#bb8009} .badge[data-type=prompt]{background:#8250df}
+  .badge[data-type=antipattern]{background:#cf222e}
   .toggles { margin-inline-start:auto; display:flex; gap:4px; }
   .toggle { font:11px ui-monospace,Menlo,monospace; color:var(--muted); background:transparent;
             border:1px solid var(--border2); border-radius:6px; padding:3px 8px; cursor:pointer; }
@@ -76,6 +80,7 @@ PAGE = """<!doctype html>
   .meta { color:var(--muted); font:12px ui-monospace,Menlo,monospace; margin-top:10px; }
   .score { color:#3fb950; }
   .card[data-type=session_summary]{ border-inline-start:3px solid #bb8009; background:#15130c; }
+  .card[data-type=antipattern]{ border-inline-start:3px solid #cf222e; background:#1a1210; }
   .card[data-type=prompt]{ border-inline-start:3px solid #8250df; background:#131022; }
   .prompt { color:#c9d1d9; white-space:pre-wrap; }
   .summary-sec { margin-top:10px; }
@@ -134,6 +139,7 @@ PAGE = """<!doctype html>
     <button class="vtoggle" data-view="index" title="Code &amp; docs index">index</button>
   </div>
   <select id="project"></select>
+  <button id="delproj" title="Delete this project — erases all memory and index for it (irreversible)">🗑</button>
   <select id="kind" style="display:none">
     <option value="">all</option>
     <option value="doc_section">docs</option>
@@ -182,7 +188,7 @@ async function loadProjects() {
   return rows.length;
 }
 function badge(c) {
-  const t = c.type || (c.kind==='session_summary'?'session_summary':'discovery');
+  const t = c.type || (c.kind==='session_summary'?'session_summary':(c.kind==='antipattern'?'antipattern':'discovery'));
   return `<span class="badge" data-type="${esc(t)}">${esc(t.replace('_',' '))}</span>`;
 }
 function filesHTML(c) {
@@ -216,6 +222,13 @@ function cardHTML(c, flash) {
   }
   if (c.kind === 'session_summary') {
     return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
+  }
+  if (c.kind === 'antipattern') {
+    // Structured like a summary: title heading, the terse rule as the lead, then the
+    // narrative's "Label: text" lines as titled sections.
+    const rule = (c.facts && c.facts[0]) || c.subtitle || '';
+    const ruleHTML = rule ? `<div class="subtitle">${esc(rule)}</div>` : '';
+    return `<div class="${cls}" data-type="antipattern"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${ruleHTML}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }
   const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
@@ -339,6 +352,27 @@ $('#views').addEventListener('click', async e => {
 });
 $('#kind').addEventListener('change', () => reload());
 $('#project').addEventListener('change', () => reload());
+// Delete a whole project: erases all memory (stm/ltm/archived), the code/docs index,
+// the work queue and telemetry for it. Guarded by a confirm() naming the project — the
+// server side is the only write route the viewer exposes.
+$('#delproj').addEventListener('click', async () => {
+  const sel = $('#project'), pk = sel.value;
+  if (!pk) return;
+  const label = (sel.selectedOptions[0]?.textContent || pk).replace(/\\s*\\(\\d+\\)\\s*$/, '');
+  if (!confirm(`Delete "${label}" and ALL of its data?\\n\\n`
+      + `This erases every memory (short- and long-term, plus archived), the code/docs `
+      + `index, the rescue queue and the token ledger for this project.\\n\\n`
+      + `This cannot be undone.`)) return;
+  await fetch('/api/delete_project', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ project: pk }),
+  });
+  seen = new Set();
+  sel.value = '';   // drop the deleted key so loadProjects() doesn't re-pin it as a ghost entry
+  const n = await loadProjects();
+  if (n) await reload(); else $('#list').innerHTML = '<div class="empty">No memory captured yet.</div>';
+  loadLedger();
+});
 let t; $('#q').addEventListener('input', () => { clearTimeout(t); t=setTimeout(() => reload(),180); });
 window.addEventListener('scroll', () => {
   if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) loadMore();
@@ -698,6 +732,33 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(out))
         else:
             self._send(404, "{}")
+
+    def do_POST(self) -> None:  # noqa: N802
+        """The only write route: delete every trace of one project.
+
+        The viewer is otherwise read-only; this single mutating endpoint is guarded by
+        an explicit browser-side confirmation and bound to localhost. Any other path or
+        a malformed body is a 404 / 400 — never a silent write.
+        """
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/delete_project":
+            self._send(404, "{}")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            project_key = (payload.get("project") or "").strip()
+        except (ValueError, TypeError):
+            self._send(400, json.dumps({"error": "bad request"}))
+            return
+        if not project_key:
+            self._send(400, json.dumps({"error": "project required"}))
+            return
+        cfg = get_config()
+        store = Store(cfg.db_path)
+        counts = store.delete_project(project_key)
+        store.close()
+        self._send(200, json.dumps({"deleted": counts}))
 
     @staticmethod
     def _index_project(store, project_key: str) -> dict:

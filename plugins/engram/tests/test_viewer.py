@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.config import get_config  # noqa: E402
+from core.store import Store  # noqa: E402
 from viewer.serve import _disambiguate_labels, _service_health, _tcp_ok  # noqa: E402
 
 
@@ -90,6 +91,71 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertTrue(h["distiller"]["backend"].startswith("ollama"))
         self.assertEqual(h["distiller"]["state"], "warn")
         self.assertIn("heuristic", h["distiller"]["detail"])  # names the fallback
+
+
+class DeleteProjectTests(unittest.TestCase):
+    """The viewer's project-delete route wipes every trace of one project (facts,
+    index chunks, work queue, telemetry, cursors, index label) while leaving other
+    projects untouched — so a removed project vanishes from every tab."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.store = Store(Path(self.dir) / "t.db")
+
+    def tearDown(self):
+        self.store.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _seed(self, pk: str, label: str) -> None:
+        db = self.store.db
+        db.execute(
+            "INSERT INTO facts (id, project_key, project_label, project_path, session_id, "
+            "kind, text, created_at, status, tier) VALUES (?, ?, ?, ?, 's', 'discovery', ?, 1.0, 'active', 'stm')",
+            (f"{pk}-f", pk, label, f"/tmp/{pk}", f"fact for {label}"),
+        )
+        db.execute(
+            "INSERT INTO chunks (id, project_key, source_path, kind, anchor, title, heading_path, "
+            "level, indexed_at) VALUES (?, ?, 'a.py', 'code_symbol', 'a', 'A', 'A', 0, 1.0)",
+            (f"{pk}-c", pk),
+        )
+        db.execute(
+            "INSERT INTO chunk_sources (project_key, source_path, file_hash, mtime_ns, indexed_at) "
+            "VALUES (?, 'a.py', 'h', 0, 1.0)",
+            (pk,),
+        )
+        db.execute(
+            "INSERT INTO index_meta (project_key, label, path, updated_at) VALUES (?, ?, ?, 1.0)",
+            (pk, label, f"/tmp/{pk}"),
+        )
+        db.commit()
+        self.store.log_recall(pk, "q", returned=1, top_sim=0.5, confidence=0.5, verdict="ok")
+        self.store.set_capture_cursor(f"{pk}:sess", 10)
+
+    def test_delete_wipes_only_the_target_project(self):
+        self._seed("pk1", "ProjOne")
+        self._seed("pk2", "ProjTwo")
+
+        counts = self.store.delete_project("pk1")
+        self.assertEqual(counts["facts"], 1)
+        self.assertEqual(counts["chunks"], 1)
+
+        # pk1 is gone from every table; pk2 is fully intact.
+        db = self.store.db
+        for table in ("facts", "chunks", "chunk_sources", "recall_events", "index_meta"):
+            gone = db.execute(f"SELECT COUNT(*) FROM {table} WHERE project_key = 'pk1'").fetchone()[0]
+            kept = db.execute(f"SELECT COUNT(*) FROM {table} WHERE project_key = 'pk2'").fetchone()[0]
+            self.assertEqual(gone, 0, f"{table} still has pk1 rows")
+            self.assertGreater(kept, 0, f"{table} lost pk2 rows")
+        cursors = db.execute("SELECT COUNT(*) FROM capture_cursors WHERE cursor_key LIKE 'pk1:%'").fetchone()[0]
+        self.assertEqual(cursors, 0)
+
+        self.assertEqual([r["project_key"] for r in self.store.projects()], ["pk2"])
+        self.assertEqual([r["project_key"] for r in self.store.chunk_projects()], ["pk2"])
+
+    def test_delete_missing_project_is_a_noop(self):
+        self._seed("pk1", "ProjOne")
+        self.assertEqual(self.store.delete_project("nope"), {"facts": 0, "chunks": 0, "work_queue": 0})
+        self.assertEqual([r["project_key"] for r in self.store.projects()], ["pk1"])
 
 
 if __name__ == "__main__":
