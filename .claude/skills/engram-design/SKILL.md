@@ -108,6 +108,19 @@ draft that fails any of them.
     obtain the reported numbers. A result nobody can reproduce is not a result.
 12. **The design does not implement.** It specifies decisions, contracts, and claims;
     pseudocode is acceptable where it makes a contract concrete, runnable code is not.
+13. **A standalone publication.** The paper stands on its own with no reference to a
+    previous version of *itself* — no "the first version", "this second version", "version
+    2 corpus", or "resolving a hypothesis version 1 left open". A whitepaper is a distinct
+    publication, not a changelog. An earlier dataset or pilot may be named as such (e.g.
+    "an earlier 64-fact pilot set") but never framed as a prior edition of the paper; the
+    version lives in the filename and date, not in the prose.
+14. **Diagrams and equations are grounded, not decorative.** Equations are transcribed
+    from the source (the actual scoring, decay, quantisation, or cost functions), never
+    invented, and every figure depicts a real mechanism. When the design reinterprets
+    prior work (a cognitive, biological, or economic model), a two-column mapping/flow
+    diagram — the original interpretation on the left, this system on the right — grounds
+    the reinterpretation; the Bitcoin paper's traditional-versus-new privacy figure is the
+    template. Build mechanics and safe-editing rules are in [`references/pdf.md`](references/pdf.md).
 
 ## The structure (systems-research mapping)
 

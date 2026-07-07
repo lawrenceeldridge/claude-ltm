@@ -90,6 +90,25 @@ right mechanism per block:
   pages carry the widest content) and treat any clipped or wrapped line as a defect to
   fix in the source, not to ship.
 
+### Diagrams, equations, and safe source editing
+
+- **Diagrams** use TikZ (`\usepackage{tikz}` is in `header.tex`; tectonic auto-fetches it).
+  Keep them boxes-and-arrows in the Bitcoin-paper idiom. Two gotchas: do **not** name a
+  TikZ style `step` — it collides with a built-in pgf key and fails to compile with
+  "the key /tikz/step requires a value"; use `box`, `nd`, and the like. And a long
+  horizontal row of nodes overflows portrait width, so lay wide flows out vertically or
+  wrap them in `\begin{landscape}`.
+- **Equations** are written as `$$…$$` display maths and transcribed from the source
+  functions. If a single display runs past the right margin, split it across two `$$`
+  lines rather than shrinking it; `microtype` (in `header.tex`) absorbs only small
+  overflows.
+- **Never edit LaTeX or maths in the draft with `perl -i -pe 's/…/…/'`.** perl interprets
+  backslashes on the *replacement* side, so `\quad` becomes `quad` and `\big` becomes a
+  literal backspace control character, silently corrupting equations — often past a build
+  that merely *looks* clean because the failure was misread. Use Python `str.replace`, or
+  the Edit tool, for any text containing backslashes, and always rebuild and eyeball the
+  affected page afterwards.
+
 To restyle a single paper without editing the shared assets, add LaTeX to that paper's
 metadata (`header-includes:`); to change the house style for all papers, edit the two
 `assets/pandoc/` files.
