@@ -183,7 +183,7 @@ engram consolidate [--all] run the sleep pass: promote recalled STM, integrate n
 engram nats status|start|stop  manage the opt-in NATS server (bus=nats)
 engram queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
 engram daemon              run the resident daemon (keeps the embedder warm)
-engram viewer              launch the localhost viewer (STM / LTM / RnR / index tabs)
+engram viewer              launch the localhost viewer (STM / LTM / RnR / index tabs; delete a project via the 🗑 button)
 engram stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
 engram eval --backends … [--stm]  benchmark embedding backends (paired stats when ≥2); --stm adds the STM-tier lever scenario
 engram replay [--transcript-dir …]  counterfactual token savings from past session transcripts (trace-driven, conservative)
