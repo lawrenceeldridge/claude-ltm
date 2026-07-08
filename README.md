@@ -32,6 +32,11 @@ memory lifecycle on top, drawn from the **Atkinson–Shiffrin multi-store model*
 the **Active Systems Consolidation Hypothesis** (details, and the honest limits of the
 mapping, in [DESIGN.md](DESIGN.md)):
 
+- **Sensory register (iconic, opt-in)** — an ephemeral tier *before* short-term memory,
+  **off by default**. Page accessibility snapshots from `compact_page_view` land here at
+  large capacity and decay fast; one re-glanced enough (`sensory_promote_after`) is
+  *attended* and promoted into STM, the rest are forgotten — completing the
+  Atkinson–Shiffrin staging (sensory → STM → LTM). Browse it in the viewer's **Sensory** tab.
 - **Recency decay** — a fact's rank score decays exponentially with age
   (`half_life_days`) unless reinforced.
 - **Rehearsal & retrieval** — two complementary ways a fact promotes from the
@@ -138,7 +143,7 @@ claude-engram/
     │   ├── mcp_server.py               #   MCP tools (recall, search_code, get_symbol, …)
     │   └── daemon.py                   #   optional resident embedder
     ├── bench/                          # labelled recall benchmark + dataset
-    ├── viewer/                         # localhost browser (stdlib http.server) — STM / LTM / RnR / index tabs
+    ├── viewer/                         # localhost browser (stdlib http.server) — STM / LTM / Sensory / Consolidation / index tabs
     └── tests/                          # stdlib unittest / pytest suite
 ```
 
@@ -204,7 +209,7 @@ engram consolidate [--all] run the sleep pass: promote recalled STM, integrate n
 engram nats status|start|stop  manage the opt-in NATS server (bus=nats)
 engram queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
 engram daemon              run the resident daemon (keeps the embedder warm)
-engram viewer              launch the localhost viewer (STM / LTM / RnR / index tabs; delete a project via the 🗑 button)
+engram viewer              launch the localhost viewer (STM / LTM / Sensory / Consolidation / index tabs; delete a project via the 🗑 button)
 engram stats [--all]       token-savings ledger: injected (cost) vs saved (targeted + bounded reads + recall shortcuts), net
 engram eval --backends … [--stm]  benchmark embedding backends (paired stats when ≥2); --stm adds the STM-tier lever scenario
 engram replay [--transcript-dir …]  counterfactual token savings from past session transcripts (trace-driven, conservative)
@@ -296,7 +301,8 @@ env vars; defaults `1.0 / 0.3 / 0.2`.
 Fresh facts enter a short-term tier and promote to long-term on rehearsal; a
 consolidation ("sleep") pass runs at session checkpoints (or `engram consolidate`).
 Recall is tier-agnostic and **pruning is off by default** — turn it on deliberately.
-Set via `userConfig` (or `ENGRAM_*` env):
+An optional **sensory register** sits *before* STM (also off by default — see the
+cognitive-model section). Set via `userConfig` (or `ENGRAM_*` env):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -307,6 +313,10 @@ Set via `userConfig` (or `ENGRAM_*` env):
 | `refine_keep_max` | `20000` | keep only the top-N facts by retention score, prune the rest (reversible) — ships on as a generous idempotent growth ceiling (0 = off) |
 | `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor. Off by default: it forgets every pass and a good rate is store-dependent (0 = off) |
 | `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM`. Off by default: the only irreversible lever (0 = off) |
+| `sensory` | `false` | enable the **sensory register** — an ephemeral pre-STM tier holding `compact_page_view` page snapshots. Off by default (records nothing) |
+| `sensory_capacity` | `200` | max sensory snapshots per project before the oldest are hard-deleted (decay). 0 = unbounded |
+| `sensory_ttl_seconds` | `900` | snapshots older than this are hard-deleted on the next sweep — rapid decay (0 = no TTL) |
+| `sensory_promote_after` | `2` | glances (re-views of the same page) that mark a snapshot *attended* → promoted into STM (rehearsal) |
 
 ### Durable work queue — MemoryBus (inproc / NATS)
 
