@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import unittest
 
-from core.adapters._snapshot_util import view_from_page
+from core.adapters._snapshot_util import pick_page, view_from_page
 from core.adapters.chrome_devtools_snap import ChromeDevToolsSnapshotter
 from core.adapters.playwright_snap import PlaywrightSnapshotter
 from core.ports.snapshot import PageView
@@ -55,6 +55,51 @@ class ViewFromPageTests(unittest.TestCase):
         self.assertTrue(view.is_empty)
         self.assertIsNone(view.width)
         self.assertIsNone(view.height)
+
+
+class _FakeTab:
+    """A duck-typed page for pick_page: exposes .url and .evaluate(visibilityState)."""
+
+    def __init__(self, url: str, visible: bool = False, raises: bool = False) -> None:
+        self.url = url
+        self._visible = visible
+        self._raises = raises
+
+    def evaluate(self, _expr: str) -> str:
+        if self._raises:
+            raise RuntimeError("page crashed")
+        return "visible" if self._visible else "hidden"
+
+
+class PickPageTests(unittest.TestCase):
+    """Which tab the chrome-devtools backend snapshots on a shared multi-tab browser."""
+
+    def test_target_matches_existing_tab(self):
+        pages = [_FakeTab("https://a.com"), _FakeTab("https://ex.com/login"), _FakeTab("https://b.com")]
+        self.assertIs(pick_page(pages, "https://ex.com/login"), pages[1])
+
+    def test_target_is_trailing_slash_insensitive(self):
+        pages = [_FakeTab("http://127.0.0.1:7801/")]
+        self.assertIs(pick_page(pages, "http://127.0.0.1:7801"), pages[0])
+
+    def test_target_no_match_returns_none(self):
+        self.assertIsNone(pick_page([_FakeTab("https://a.com")], "https://x.com"))
+
+    def test_no_target_picks_the_visible_tab(self):
+        pages = [_FakeTab("https://bg.com"), _FakeTab("https://active.com", visible=True), _FakeTab("https://c.com")]
+        self.assertIs(pick_page(pages, None), pages[1])
+
+    def test_no_target_no_visible_falls_back_to_first(self):
+        pages = [_FakeTab("https://a.com"), _FakeTab("https://b.com")]
+        self.assertIs(pick_page(pages, None), pages[0])
+
+    def test_visibility_eval_error_counts_as_not_visible(self):
+        pages = [_FakeTab("https://crash.com", raises=True), _FakeTab("https://ok.com", visible=True)]
+        self.assertIs(pick_page(pages, None), pages[1])
+
+    def test_empty_pages_returns_none(self):
+        self.assertIsNone(pick_page([], None))
+        self.assertIsNone(pick_page([], "https://x.com"))
 
 
 class FailOpenTests(unittest.TestCase):

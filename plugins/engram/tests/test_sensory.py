@@ -8,10 +8,12 @@ never appear in the facts/recall query).
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from core import service
 from core.config import get_config
@@ -102,7 +104,12 @@ class ShouldPromoteTests(unittest.TestCase):
 
 class SensoryConfigTests(unittest.TestCase):
     def test_defaults_off_and_inert(self):
-        cfg = get_config()
+        # Assert the shipped DEFAULT, isolated from ambient ENGRAM_* env (a dev may have
+        # ENGRAM_SENSORY set — it's the recommended config) so this reflects the manifest.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for k in ("ENGRAM_SENSORY", "CLAUDE_PLUGIN_OPTION_SENSORY", "CLAUDE_PLUGIN_OPTION_sensory"):
+                os.environ.pop(k, None)
+            cfg = get_config()
         self.assertFalse(cfg.sensory)
         self.assertEqual(cfg.sensory_promote_after, 2)
         self.assertGreater(cfg.sensory_capacity, 0)
