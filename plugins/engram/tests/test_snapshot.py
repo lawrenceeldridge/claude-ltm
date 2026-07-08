@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from core.config import get_config
 from core.ports.snapshot import (
@@ -49,7 +51,11 @@ class PageViewTests(unittest.TestCase):
 
 class GetSnapshotterTests(unittest.TestCase):
     def test_defaults_to_stub(self):
-        self.assertIsInstance(get_snapshotter(get_config()), StubSnapshotter)
+        # Isolate from ambient ENGRAM_SNAPSHOTTER so this reflects the manifest default.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for k in ("ENGRAM_SNAPSHOTTER", "CLAUDE_PLUGIN_OPTION_SNAPSHOTTER", "CLAUDE_PLUGIN_OPTION_snapshotter"):
+                os.environ.pop(k, None)
+            self.assertIsInstance(get_snapshotter(get_config()), StubSnapshotter)
 
     def test_stub_selected_explicitly(self):
         cfg = replace(get_config(), snapshotter="stub")

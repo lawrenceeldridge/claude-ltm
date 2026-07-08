@@ -26,3 +26,36 @@ def view_from_page(page) -> PageView:
         width=viewport.get("width"),
         height=viewport.get("height"),
     )
+
+
+def _norm_url(url: str | None) -> str:
+    return (url or "").rstrip("/")
+
+
+def _is_visible(page) -> bool:
+    """Whether a tab is the foreground (visible) tab of its window. Fail-safe: any
+    ``evaluate`` error (a crashed or closing page) counts as not visible."""
+    try:
+        return page.evaluate("document.visibilityState") == "visible"
+    except Exception:
+        return False
+
+
+def pick_page(pages, target: str | None = None):
+    """Choose which open tab to snapshot when attached to a shared browser (CDP).
+
+    - With a ``target`` URL: the already-open tab at that URL (trailing-slash
+      insensitive), or None when none matches — the caller decides whether to open it.
+    - Without a target: the **visible/foreground** tab (what the controller is
+      looking at), falling back to the first tab.
+
+    This is what makes the chrome-devtools backend snapshot the page the caller
+    (e.g. Chrome DevTools MCP) just navigated, rather than an arbitrary background
+    tab (``pages[0]``) on a multi-tab browser.
+    """
+    if not pages:
+        return None
+    if target:
+        wanted = _norm_url(target)
+        return next((p for p in pages if _norm_url(getattr(p, "url", "")) == wanted), None)
+    return next((p for p in pages if _is_visible(p)), pages[0])
