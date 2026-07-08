@@ -15,7 +15,7 @@ from pathlib import Path
 
 from core import service
 from core.config import get_config
-from core.domain.sensory import should_promote
+from core.domain.sensory import should_promote, summarize_snapshot
 from core.ports.embedding import HashEmbedding
 from core.store import Store
 
@@ -150,6 +150,93 @@ class RecallIsolationTests(unittest.TestCase):
         store.close()
         self.assertNotIn("SENSORY_MARKER_XYZ", json.dumps(result))  # sensory absent from recall
         self.assertGreaterEqual(result["matched"], 1)  # the real fact matched; sensory did not
+
+
+class SummarizeSnapshotTests(unittest.TestCase):
+    def test_heading_and_controls_dash_format(self):
+        text = '- heading "Sign in" [level=1]\n- textbox "Email"\n- button "Continue"\n- link "Home"'
+        out = summarize_snapshot("https://ex.com/login", text)
+        self.assertTrue(out.startswith("Viewed https://ex.com/login"))
+        self.assertIn('"Sign in"', out)
+        self.assertIn("Email", out)
+        self.assertIn("Continue", out)
+
+    def test_indented_stub_format(self):
+        out = summarize_snapshot("u", '    heading "Overview" level=1\n    button "Export"')
+        self.assertIn('"Overview"', out)
+        self.assertIn("Export", out)
+
+    def test_empty_when_nothing_nameable(self):
+        self.assertEqual(summarize_snapshot("u", "banner\n  generic\n  text: hello"), "")
+
+    def test_capped(self):
+        text = "\n".join(f'- button "b{i}"' for i in range(50))
+        self.assertLessEqual(len(summarize_snapshot("u", text, max_len=60)), 60)
+
+
+class PromoteSensoryTests(unittest.TestCase):
+    def _setup(self, promote_after: int = 2):
+        tmp = tempfile.mkdtemp(prefix="engram-sensory-promote-")
+        store = Store(Path(tmp) / "m.db")
+        cfg = replace(
+            get_config(),
+            sensory=True,
+            sensory_promote_after=promote_after,
+            min_sim=-1.0,
+            recall_min_confidence=0.0,
+        )
+        return store, cfg, HashEmbedding(dim=cfg.dim), {"key": "p", "path": tmp, "label": "p"}
+
+    def test_promotes_attended_into_stm_and_recall(self):
+        store, cfg, embedder, project = self._setup(promote_after=2)
+        snap = '- heading "Sign in"\n- button "Continue"'
+        store.add_sensory("p", "s1", "https://ex.com/login", snap)  # glance 1
+        store.add_sensory("p", "s1", "https://ex.com/login", snap)  # glance 2 → attended
+        n = service.promote_sensory(store, embedder, cfg, project)
+        self.assertEqual(n, 1)
+        row = store.sensory_rows("p")[0]
+        self.assertEqual(row["attended"], 1)
+        self.assertIsNotNone(row["promoted_fact_id"])
+        facts = store.active_rows_for_project("p")
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["tier"], "stm")  # promoted into short-term memory
+        result = service.recall_structured(store, embedder, cfg, project, "Sign in login")
+        store.close()
+        self.assertIn("Sign in", json.dumps(result))  # the promoted fact is now recallable
+
+    def test_below_threshold_not_promoted(self):
+        store, cfg, embedder, project = self._setup(promote_after=3)
+        store.add_sensory("p", "s1", "u", '- heading "X"')  # glance_count 1 < 3
+        n = service.promote_sensory(store, embedder, cfg, project)
+        store.close()
+        self.assertEqual(n, 0)
+
+    def test_idempotent_no_duplicate(self):
+        store, cfg, embedder, project = self._setup(promote_after=1)
+        store.add_sensory("p", "s1", "u", '- heading "X"\n- button "Go"')
+        first = service.promote_sensory(store, embedder, cfg, project)
+        second = service.promote_sensory(store, embedder, cfg, project)
+        facts = len(store.active_rows_for_project("p"))
+        store.close()
+        self.assertEqual((first, second), (1, 0))  # attended row skipped on the second pass
+        self.assertEqual(facts, 1)  # no duplicate fact
+
+    def test_noop_when_off(self):
+        store, cfg, embedder, project = self._setup(promote_after=1)
+        store.add_sensory("p", "s1", "u", '- heading "X"\n- button "Go"')
+        n = service.promote_sensory(store, embedder, replace(cfg, sensory=False), project)
+        store.close()
+        self.assertEqual(n, 0)
+
+    def test_empty_summary_marked_attended_not_promoted(self):
+        store, cfg, embedder, project = self._setup(promote_after=1)
+        store.add_sensory("p", "s1", "u", "banner\n  text: hello")  # nothing nameable
+        n = service.promote_sensory(store, embedder, cfg, project)
+        row = store.sensory_rows("p")[0]
+        facts = len(store.active_rows_for_project("p"))
+        store.close()
+        self.assertEqual((n, facts), (0, 0))
+        self.assertEqual(row["attended"], 1)  # marked so it isn't reconsidered every sweep
 
 
 if __name__ == "__main__":
