@@ -673,6 +673,18 @@ def _pack_facts(hits: list, max_chars: int) -> tuple[list[dict], int, list[str]]
     return packed, len(hits) - len(packed), packed_ids
 
 
+def record_sensory(store: Store, cfg: Config, project: Project, session_id: str, url: str, text: str) -> str | None:
+    """Record a page a11y snapshot in the sensory register (Command, write side).
+
+    A no-op unless the sensory tier is enabled (``cfg.sensory``) or when the text is
+    empty — so it costs nothing by default. Pure write: **no embedding** (that happens
+    only at promotion, in the detached worker). Returns the sensory id, or None.
+    """
+    if not cfg.sensory or not (text or "").strip():
+        return None
+    return store.add_sensory(project["key"], session_id, url or "", text)
+
+
 def recall_structured(
     store: Store,
     embedder: EmbeddingGateway,

@@ -115,6 +115,31 @@ class McpCompactPageViewTests(unittest.TestCase):
         self.assertTrue(payload["truncated"])
         self.assertIn("[truncated]", payload["text"])
 
+    def test_records_sensory_when_enabled_and_stays_fail_open(self):
+        # With sensory on, compact_page_view records a snapshot as a side effect AND still
+        # returns its DTO (the read-tool→write crossing is fire-and-forget + fail-open).
+        env = {**self.env, "ENGRAM_SENSORY": "true"}
+        resp = _rpc(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "compact_page_view", "arguments": {"url": "https://ex.com/login"}},
+            },
+            env=env,
+        )
+        payload = _call_payload(resp, 5)
+        self.assertFalse(payload["empty"])  # tool result stands regardless of the record
+        from core.store import Store
+
+        store = Store(Path(self.data.name) / "memory.db")
+        try:
+            count = store.db.execute("SELECT COUNT(*) FROM sensory").fetchone()[0]
+        finally:
+            store.close()
+        self.assertGreaterEqual(count, 1)
+
 
 class McpAnchorRoundTripTests(unittest.TestCase):
     """search_code emits an `anchor`; get_symbol must accept it (not only `ref`)."""

@@ -7,12 +7,16 @@ never appear in the facts/recall query).
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from core import service
 from core.config import get_config
 from core.domain.sensory import should_promote
+from core.ports.embedding import HashEmbedding
 from core.store import Store
 
 
@@ -102,6 +106,50 @@ class SensoryConfigTests(unittest.TestCase):
         self.assertFalse(cfg.sensory)
         self.assertEqual(cfg.sensory_promote_after, 2)
         self.assertGreater(cfg.sensory_capacity, 0)
+
+
+class RecordSensoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="engram-sensory2-")
+        self.store = Store(Path(self.tmp) / "m.db")
+        self.project = {"key": "p", "path": self.tmp, "label": "p"}
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_records_when_on(self):
+        cfg = replace(get_config(), sensory=True)
+        sid = service.record_sensory(self.store, cfg, self.project, "s1", "https://ex.com", "- heading Login")
+        self.assertIsNotNone(sid)
+        self.assertEqual(len(self.store.sensory_rows("p")), 1)
+
+    def test_noop_when_off(self):
+        cfg = replace(get_config(), sensory=False)
+        self.assertIsNone(service.record_sensory(self.store, cfg, self.project, "s1", "https://ex.com", "- heading"))
+        self.assertEqual(self.store.sensory_rows("p"), [])
+
+    def test_noop_on_empty_text(self):
+        cfg = replace(get_config(), sensory=True)
+        self.assertIsNone(service.record_sensory(self.store, cfg, self.project, "s1", "u", "   \n"))
+        self.assertEqual(self.store.sensory_rows("p"), [])
+
+
+class RecallIsolationTests(unittest.TestCase):
+    """The gate: sensory content must NEVER appear in recall (verified via recall_structured)."""
+
+    def test_sensory_never_enters_recall(self):
+        tmp = tempfile.mkdtemp(prefix="engram-sensory-iso-")
+        store = Store(Path(tmp) / "m.db")
+        cfg = replace(get_config(), sensory=True, min_sim=-1.0, recall_min_confidence=0.0)
+        embedder = HashEmbedding(dim=cfg.dim)
+        project = {"key": "p", "path": tmp, "label": "p"}
+        # A real fact so recall returns something, plus a sensory snapshot carrying a marker.
+        service.add_facts(store, embedder, cfg, project, "s1", ["widget alpha handles login"])
+        service.record_sensory(store, cfg, project, "s1", "https://ex.com/login", "SENSORY_MARKER_XYZ heading")
+        result = service.recall_structured(store, embedder, cfg, project, "widget login")
+        store.close()
+        self.assertNotIn("SENSORY_MARKER_XYZ", json.dumps(result))  # sensory absent from recall
+        self.assertGreaterEqual(result["matched"], 1)  # the real fact matched; sensory did not
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ the loop.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import OrderedDict
 
@@ -270,6 +271,9 @@ class _Engine:
         self.cfg = get_config()
         self.store = Store(self.cfg.db_path)
         self.embedder = get_embedder(self.cfg)
+        # Session proxy for the sensory register: the engram MCP server is per-session in
+        # Claude Code, so the process id groups a page's re-glances within this session.
+        self._session_id = f"mcp-{os.getpid()}"
         self._ready = True
 
     def _cache_get(self, key: tuple) -> dict | None:
@@ -450,6 +454,23 @@ class _Engine:
             }
         dto = render_page_view(view, max_chars)
         dto["backend"] = self.cfg.snapshotter
+        # Sensory register (opt-in): record this glance off to the side, fire-and-forget +
+        # fail-open — a record failure must never affect the returned snapshot. No-op when
+        # sensory=off. This is the one write on the read tool's path; kept deliberately cheap.
+        if not view.is_empty:
+            try:
+                from core.service import record_sensory
+
+                record_sensory(
+                    self.store,
+                    self.cfg,
+                    self._project(None),
+                    self._session_id,
+                    view.url or args.get("url") or "",
+                    view.text,
+                )
+            except Exception:  # fire-and-forget — the tool result stands regardless
+                pass
         return dto
 
 
