@@ -158,5 +158,55 @@ class DeleteProjectTests(unittest.TestCase):
         self.assertEqual([r["project_key"] for r in self.store.projects()], ["pk1"])
 
 
+class DeleteMemoryTests(unittest.TestCase):
+    """delete_memory removes one viewer card — a whole observation group (all facts
+    sharing observation_id) or a single ungrouped fact — leaving other memories intact."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.store = Store(Path(self.dir) / "t.db")
+
+    def tearDown(self):
+        self.store.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _fact(self, fid: str, text: str, obs: str | None = None) -> None:
+        self.store.db.execute(
+            "INSERT INTO facts (id, project_key, project_label, project_path, session_id, kind, "
+            "text, observation_id, created_at, status, tier) "
+            "VALUES (?, 'pk', 'P', '/p', 's', 'discovery', ?, ?, 1.0, 'active', 'stm')",
+            (fid, text, obs),
+        )
+        self.store.db.commit()
+
+    def test_delete_observation_group_removes_all_its_facts(self):
+        self._fact("a1", "alpha one", obs="obs-A")
+        self._fact("a2", "alpha two", obs="obs-A")
+        self._fact("b1", "beta one", obs="obs-B")
+        removed = self.store.delete_memory("obs-A")
+        self.assertEqual(removed, 2)
+        left = [r["id"] for r in self.store.db.execute("SELECT id FROM facts ORDER BY id")]
+        self.assertEqual(left, ["b1"])  # the other observation is untouched
+
+    def test_delete_single_ungrouped_fact_by_id(self):
+        self._fact("solo", "a lone fact", obs=None)
+        self._fact("keep", "keep me", obs=None)
+        self.assertEqual(self.store.delete_memory("solo"), 1)
+        self.assertEqual([r["id"] for r in self.store.db.execute("SELECT id FROM facts")], ["keep"])
+
+    def test_delete_stays_searchable_via_fts_after(self):
+        # FTS must stay consistent after a delete (external-content trigger).
+        self._fact("a1", "alpha searchable", obs="obs-A")
+        self._fact("b1", "beta searchable", obs="obs-B")
+        self.store.delete_memory("obs-A")
+        hits = list(self.store.db.execute("SELECT rowid FROM facts_fts WHERE facts_fts MATCH 'searchable'"))
+        self.assertEqual(len(hits), 1)  # only beta remains, no dangling FTS row
+
+    def test_delete_missing_key_is_a_noop(self):
+        self._fact("a1", "alpha", obs="obs-A")
+        self.assertEqual(self.store.delete_memory("nope"), 0)
+        self.assertEqual(self.store.delete_memory(""), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -93,13 +93,18 @@ class ParseAntipatternsTests(unittest.TestCase):
         self.assertEqual(r.scope, "global")
         self.assertEqual(r.title, "Bash Tool Parameter Injection")
         self.assertEqual(r.subtitle, _CURL["anti_pattern"])
-        self.assertTrue(r.text.startswith("Never put AI-tool flags"))
-        self.assertIn("DON'T", r.text)
+        # text is the rule ALONE, whole; DON'T/DO/root-cause live in the narrative (shown once).
+        self.assertEqual(r.text, _CURL["strict_rule"])
+        self.assertNotIn("DON'T", r.text)
         self.assertIn("Root cause:", r.narrative)
+        self.assertIn("DON'T: curl -X PUT", r.narrative)
+        self.assertIn("DO: set sandbox:false", r.narrative)
 
-    def test_text_capped(self):
-        recs = parse_antipatterns(json.dumps({"antipatterns": [_CURL]}))
-        self.assertLessEqual(len(recs[0].text), 200)
+    def test_rule_stored_whole_no_ellipsis(self):
+        # A normal rule is well under the guard, so it is stored whole — no ellipsis, no mid-word cut.
+        r = parse_antipatterns(json.dumps({"antipatterns": [_CURL]}))[0]
+        self.assertEqual(r.text, _CURL["strict_rule"])
+        self.assertFalse(r.text.endswith("…"))
 
     def test_scope_defaults_to_project(self):
         item = {**_CURL}
@@ -121,16 +126,21 @@ class ParseAntipatternsTests(unittest.TestCase):
 
 
 class TextCapTests(unittest.TestCase):
-    def test_rule_first_then_dont_do(self):
-        text = _antipattern_text("Never do X", "run bad-cmd", "run good-cmd")
-        self.assertTrue(text.startswith("Never do X"))
-        self.assertIn("DON'T run bad-cmd", text)
-        self.assertIn("DO run good-cmd", text)
+    def test_text_is_the_rule_alone(self):
+        # DON'T/DO are NOT bundled into text — it is just the rule (trailing period stripped).
+        text = _antipattern_text("Never do X.")
+        self.assertEqual(text, "Never do X")
 
-    def test_hard_cap_keeps_rule(self):
-        text = _antipattern_text("Rule words here", "x" * 500, "y" * 500, cap=40)
-        self.assertLessEqual(len(text), 40)
-        self.assertTrue(text.startswith("Rule words here"))
+    def test_runaway_guard_trims_a_long_rule_on_word_boundary(self):
+        # A pathologically long rule: the guard trims to <= cap, ends with an ellipsis,
+        # and cuts on a word boundary (never mid-word).
+        words = "alpha beta gamma delta epsilon zeta eta theta".split()
+        text = _antipattern_text("Rule " + " ".join(words * 10), cap=60)
+        self.assertLessEqual(len(text), 60)
+        self.assertTrue(text.startswith("Rule alpha"))
+        self.assertTrue(text.endswith("…"))
+        body = text[:-1].rstrip()  # drop the ellipsis
+        self.assertIn(body.split()[-1], set(words) | {"Rule"})  # last token is whole
 
 
 class BackstopTests(unittest.TestCase):
@@ -467,7 +477,12 @@ class Phase3PreToolUseTests(unittest.TestCase):
     def test_hook_end_to_end_emits_context(self):
         # Drive bin/prefer_memory.py as a subprocess: a matching Bash command yields
         # additionalContext and exit 0 (fail-open contract holds).
-        env = {**os.environ, "ENGRAM_DATA_DIR": self.tmp.name, "ENGRAM_ANTIPATTERNS": "true", "ENGRAM_ENFORCE": "advisory"}
+        env = {
+            **os.environ,
+            "ENGRAM_DATA_DIR": self.tmp.name,
+            "ENGRAM_ANTIPATTERNS": "true",
+            "ENGRAM_ENFORCE": "advisory",
+        }
         env.pop("ENGRAM_PYTHON", None)
         payload = json.dumps(
             {
