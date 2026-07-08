@@ -207,7 +207,7 @@ memory-research models, made explicit on the *write side*, off the hot path.
 
 | Store / process | claude-engram |
 |---|---|
-| Sensory register (raw, fleeting; *attention* selects) | transcript + incremental capture cursor; **distillation is the attention gate** (`core/transcript.py`, `core/distill.py`) |
+| Sensory register (raw, fleeting; *attention* selects) | **two senses.** *Echoic/textual:* transcript + incremental capture cursor, distillation as the attention gate (`core/transcript.py`, `core/distill.py`). *Iconic (opt-in, `sensory=on`):* the **`sensory` table** — page a11y snapshots from `compact_page_view`, large-capacity, hard-decayed by capacity + TTL; re-glancing (`sensory_promote_after`) is the attention gate → promote to STM (`core/domain/sensory.py`, `service.promote_sensory`, swept in the capture worker). Separate table, never read by recall |
 | Short-term store (fresh, capacity-bounded, *displaced* when full) | `tier='stm'` facts; `stm_capacity` bounds the active STM set, `store.displace_stm` sheds the weakest |
 | Rehearsal (STM→LTM transfer) | inline `store.reinforce` + `store.promote` (freq ≥ `promote_after_freq`); batch `replay` promotes STM that was *retrieved* |
 | Long-term store (durable, semantic) | `tier='engram'` facts + decay + supersession + TTL |
