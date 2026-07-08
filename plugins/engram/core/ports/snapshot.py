@@ -43,7 +43,13 @@ class SnapshotGateway(ABC):
     """Port: a source of a page's accessibility-tree text snapshot."""
 
     @abstractmethod
-    def snapshot(self) -> PageView: ...
+    def snapshot(self, target: str | None = None) -> PageView:
+        """Return the page's accessibility-tree text as a PageView.
+
+        ``target`` is an optional URL to navigate to first (browser-driving
+        adapters); backends that operate on an already-open page — and the stub —
+        ignore it.
+        """
 
 
 _CANNED = """\
@@ -70,30 +76,39 @@ class StubSnapshotter(SnapshotGateway):
         self._text = text
         self._url = url
 
-    def snapshot(self) -> PageView:
+    def snapshot(self, target: str | None = None) -> PageView:
         return PageView(text=self._text, url=self._url)
 
 
 def get_snapshotter(cfg) -> SnapshotGateway:
     """Plugin selection: pick the snapshot backend from config, fail-open to the stub.
 
-    ``cfg.snapshotter`` = 'chrome-devtools' | 'playwright' | 'stub' (default). Any
-    missing dependency, dead browser, or unknown backend degrades to the stub so
-    the tool never raises — mirrors ``get_embedder``'s fastembed->hash fallback.
+    ``cfg.snapshotter`` = 'chrome-devtools' | 'playwright' | 'stub' (default). An
+    unknown backend, or a backend whose adapter cannot even be constructed,
+    degrades to the stub. A *runtime* failure (no browser, dead CDP endpoint) is
+    handled inside the adapter, which returns an empty PageView (Null Object)
+    rather than misleading stub content — so the tool never raises either way.
     """
     backend = getattr(cfg, "snapshotter", "stub")
+    timeout_ms = int(getattr(cfg, "snapshot_timeout_ms", 5000))
     if backend == "chrome-devtools":
         try:
             from core.adapters.chrome_devtools_snap import ChromeDevToolsSnapshotter
 
-            return ChromeDevToolsSnapshotter()
-        except Exception as exc:  # fail-open — never break the tool
+            return ChromeDevToolsSnapshotter(
+                cdp_url=getattr(cfg, "snapshot_cdp_url", "http://localhost:9222"),
+                timeout_ms=timeout_ms,
+            )
+        except Exception as exc:  # construction/import failure — fall back to the stub
             print(f"[engram] chrome-devtools snapshotter unavailable ({exc}); using stub", file=sys.stderr)
     elif backend == "playwright":
         try:
             from core.adapters.playwright_snap import PlaywrightSnapshotter
 
-            return PlaywrightSnapshotter()
-        except Exception as exc:  # fail-open
+            return PlaywrightSnapshotter(
+                headless=getattr(cfg, "snapshot_headless", True),
+                timeout_ms=timeout_ms,
+            )
+        except Exception as exc:  # construction/import failure — fall back to the stub
             print(f"[engram] playwright snapshotter unavailable ({exc}); using stub", file=sys.stderr)
     return StubSnapshotter()

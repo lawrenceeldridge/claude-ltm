@@ -53,10 +53,17 @@ class GetSnapshotterTests(unittest.TestCase):
         cfg = replace(get_config(), snapshotter="does-not-exist")
         self.assertIsInstance(get_snapshotter(cfg), StubSnapshotter)
 
-    def test_unavailable_adapter_fails_open_to_stub(self):
-        # Adapters are not built yet (v1 Phase 3): selecting one must degrade to the stub.
-        cfg = replace(get_config(), snapshotter="chrome-devtools")
-        self.assertIsInstance(get_snapshotter(cfg), StubSnapshotter)
+    def test_playwright_backend_selected(self):
+        from core.adapters.playwright_snap import PlaywrightSnapshotter
+
+        cfg = replace(get_config(), snapshotter="playwright")
+        self.assertIsInstance(get_snapshotter(cfg), PlaywrightSnapshotter)
+
+    def test_chrome_devtools_backend_selected(self):
+        from core.adapters.chrome_devtools_snap import ChromeDevToolsSnapshotter
+
+        cfg = replace(get_config(), snapshotter="chrome-devtools", snapshot_cdp_url="http://localhost:9222")
+        self.assertIsInstance(get_snapshotter(cfg), ChromeDevToolsSnapshotter)
 
 
 class CoreImportsCleanTests(unittest.TestCase):
@@ -64,9 +71,13 @@ class CoreImportsCleanTests(unittest.TestCase):
         # A fresh interpreter importing only the port + pure budget pulls in no heavy
         # dep (no Pillow, no fastembed) — the stdlib-first-core guarantee for this seam.
         code = (
-            "import sys; import core.ports.snapshot, core.domain.visual_budget; "
+            "import sys; "
+            "import core.ports.snapshot, core.domain.visual_budget; "
+            "import core.adapters.playwright_snap, core.adapters.chrome_devtools_snap, "
+            "core.adapters._snapshot_util; "
             "assert 'PIL' not in sys.modules, 'PIL leaked'; "
-            "assert 'fastembed' not in sys.modules, 'fastembed leaked'"
+            "assert 'fastembed' not in sys.modules, 'fastembed leaked'; "
+            "assert 'playwright' not in sys.modules, 'playwright leaked at import'"
         )
         result = subprocess.run(
             [sys.executable, "-c", code],

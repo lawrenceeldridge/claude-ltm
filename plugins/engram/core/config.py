@@ -113,6 +113,9 @@ class Config:
     viewer_autostart: bool
     snapshotter: str
     visual_max_chars: int
+    snapshot_cdp_url: str
+    snapshot_headless: bool
+    snapshot_timeout_ms: int
     markers: tuple[str, ...]
     identity: str
     project_dir: str | None
@@ -211,6 +214,13 @@ def get_config() -> Config:
         # the *_max_chars family. Text-only in v1; the pixel path is deferred to v2.
         snapshotter=_opt("snapshotter", "stub"),
         visual_max_chars=int(_num(_opt("visual_max_chars", "2000"), 2000)),
+        # Browser-backed snapshotters (opt-in via snapshotter=chrome-devtools|playwright).
+        # chrome-devtools attaches over CDP to an existing Chrome at snapshot_cdp_url;
+        # playwright launches its own chromium (headless by default). Both fail open to an
+        # empty snapshot when no browser is reachable.
+        snapshot_cdp_url=_opt("snapshot_cdp_url", "http://localhost:9222"),
+        snapshot_headless=_opt("snapshot_headless", "true").lower() in ("1", "true", "yes", "on"),
+        snapshot_timeout_ms=int(_num(_opt("snapshot_timeout_ms", "5000"), 5000)),
         markers=markers,
         # Project identity: 'workspace' (default) keys memory on the folder Claude was
         # started in (CLAUDE_PROJECT_DIR, else cwd) — matching the human's chosen workspace,
