@@ -550,10 +550,24 @@ def parse_summary(output: str) -> DistilledFact | None:
     return DistilledFact(text=text, title=title, narrative=narrative, type="session_summary") if text else None
 
 
-# Only ``text`` is injected at recall (render_block is one-line-per-fact), so the anti-pattern's
-# imperative rule + a terse DON'T/DO must live there — the DON'T's literal tokens also drive the
-# lexical/FTS channels. Root cause + fuller example go in narrative (viewer / structured recall).
-_ANTIPATTERN_TEXT_CAP = 200
+# ``text`` is the anti-pattern's imperative rule + a terse DON'T/DO: it is what a future session
+# sees first (injected at recall, one line per fact) and its tokens drive the lexical/FTS channels,
+# so it must be stored WHOLE — a mid-word cut here corrupts the rule and confuses later recall.
+# The injection paths already bound the token budget by whole lines (recall's ``max_chars``, the
+# PreToolUse warning's own cap), so no destructive store-time cap is needed. The generous limit
+# below is only a runaway guard against a pathological LLM, and it trims on a WORD boundary with an
+# ellipsis — never mid-word. Root cause + fuller example also live in narrative (viewer / structured
+# recall; narrative is FTS-indexed too).
+_ANTIPATTERN_TEXT_CAP = 500
+
+
+def _soft_trim(text: str, cap: int) -> str:
+    """Trim to ``cap`` on a word boundary with an ellipsis; never cut mid-word."""
+    text = text.strip()
+    if len(text) <= cap:
+        return text
+    head = text[:cap].rsplit(None, 1)[0].rstrip(" ,;:—-")
+    return f"{head}…" if head else text[:cap].rstrip()
 
 
 def _antipattern_text(strict_rule: str, dont: str, do: str, cap: int = _ANTIPATTERN_TEXT_CAP) -> str:
@@ -565,7 +579,7 @@ def _antipattern_text(strict_rule: str, dont: str, do: str, cap: int = _ANTIPATT
         tail.append(f"DO {do.strip().rstrip('.')}")
     if tail:
         text = f"{text} — " + "; ".join(tail)
-    return text[:cap].rstrip()
+    return _soft_trim(text, cap)
 
 
 _ANTIPATTERN_PROMPT = """You review a coding-assistant session for MISTAKES THE ASSISTANT MADE and

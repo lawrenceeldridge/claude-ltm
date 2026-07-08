@@ -97,9 +97,13 @@ class ParseAntipatternsTests(unittest.TestCase):
         self.assertIn("DON'T", r.text)
         self.assertIn("Root cause:", r.narrative)
 
-    def test_text_capped(self):
-        recs = parse_antipatterns(json.dumps({"antipatterns": [_CURL]}))
-        self.assertLessEqual(len(recs[0].text), 200)
+    def test_realistic_rule_stored_in_full(self):
+        # A normal rule + DON'T/DO is well under the guard, so it is stored WHOLE
+        # (no mid-word cut, no ellipsis) — recall/FTS see the complete rule.
+        r = parse_antipatterns(json.dumps({"antipatterns": [_CURL]}))[0]
+        self.assertIn("DON'T curl -X PUT https://api/data --sandbox disabled", r.text)
+        self.assertIn("DO set sandbox:false", r.text)
+        self.assertFalse(r.text.endswith("…"))
 
     def test_scope_defaults_to_project(self):
         item = {**_CURL}
@@ -127,10 +131,17 @@ class TextCapTests(unittest.TestCase):
         self.assertIn("DON'T run bad-cmd", text)
         self.assertIn("DO run good-cmd", text)
 
-    def test_hard_cap_keeps_rule(self):
-        text = _antipattern_text("Rule words here", "x" * 500, "y" * 500, cap=40)
-        self.assertLessEqual(len(text), 40)
+    def test_runaway_guard_trims_on_word_boundary(self):
+        # Pathologically long DON'T/DO: the guard trims to <= cap, keeps the rule,
+        # ends with an ellipsis, and cuts on a word boundary (never mid-word).
+        words = "alpha beta gamma delta epsilon zeta eta theta".split()
+        text = _antipattern_text("Rule words here", " ".join(words * 10), "y", cap=60)
+        self.assertLessEqual(len(text), 60)
         self.assertTrue(text.startswith("Rule words here"))
+        self.assertTrue(text.endswith("…"))
+        body = text[:-1].rstrip()  # drop the ellipsis
+        # the trim landed on a whole word from the input — the last token is complete
+        self.assertIn(body.split()[-1], set(words) | {"DON'T"})
 
 
 class BackstopTests(unittest.TestCase):
@@ -467,7 +478,12 @@ class Phase3PreToolUseTests(unittest.TestCase):
     def test_hook_end_to_end_emits_context(self):
         # Drive bin/prefer_memory.py as a subprocess: a matching Bash command yields
         # additionalContext and exit 0 (fail-open contract holds).
-        env = {**os.environ, "ENGRAM_DATA_DIR": self.tmp.name, "ENGRAM_ANTIPATTERNS": "true", "ENGRAM_ENFORCE": "advisory"}
+        env = {
+            **os.environ,
+            "ENGRAM_DATA_DIR": self.tmp.name,
+            "ENGRAM_ANTIPATTERNS": "true",
+            "ENGRAM_ENFORCE": "advisory",
+        }
         env.pop("ENGRAM_PYTHON", None)
         payload = json.dumps(
             {

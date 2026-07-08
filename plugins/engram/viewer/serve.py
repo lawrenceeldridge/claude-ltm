@@ -55,7 +55,12 @@ PAGE = """<!doctype html>
           border-radius:var(--radius); padding:16px 20px; margin-bottom:12px; transition:border-color .15s; }
   .card:hover { border-color:var(--border2); }
   .cinner { max-width:820px; }                 /* left-aligned, capped reading column */
-  .chead { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .chead { display:flex; align-items:center; gap:8px; margin-bottom:8px; padding-inline-end:24px; }
+  .card > .del { position:absolute; top:11px; right:12px; z-index:2; background:transparent; border:0;
+                 font-size:13px; line-height:1; padding:2px 3px; cursor:pointer; opacity:0;
+                 transition:opacity .12s,color .12s; color:var(--muted); }
+  .card:hover > .del { opacity:.55; }
+  .card > .del:hover { opacity:1; color:#f85149; }
   .badge { font:600 11px/1 ui-monospace,Menlo,monospace; text-transform:uppercase; letter-spacing:.05em;
            padding:4px 7px; border-radius:6px; color:#fff; background:var(--muted); }
   .badge[data-type=feature]{background:#8957e5} .badge[data-type=change]{background:#238636}
@@ -216,25 +221,29 @@ function cardHTML(c, flash) {
   const subtitle = leadText ? `<div class="subtitle">${esc(leadText)}</div>` : '';
   const meta = `<div class="meta">${score}${esc(c.type||c.kind||'')} · ${when}</div>`;
   const cls = `card${flash?' flash':''}`;
+  // data-key + a per-card trash icon (top-right, hover-revealed) so a single memory can be
+  // deleted from stm/ltm/rnr. The key is the observation group id (or a lone fact's id).
+  const dk = c.key==null ? '' : ` data-key="${esc(c.key)}"`;
+  const del = c.key==null ? '' : `<button class="del" title="Delete this memory">🗑</button>`;
   if (c.kind === 'prompt') {
     const text = (c.facts && c.facts[0]) ? c.facts[0] : '';
-    return `<div class="${cls}" data-type="prompt"><div class="chead">${badge(c)}${spill}</div><div class="cinner"><div class="prompt">${esc(text)}</div>${meta}</div></div>`;
+    return `<div class="${cls}" data-type="prompt"${dk}>${del}<div class="chead">${badge(c)}${spill}</div><div class="cinner"><div class="prompt">${esc(text)}</div>${meta}</div></div>`;
   }
   if (c.kind === 'session_summary') {
-    return `<div class="${cls}" data-type="session_summary"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
+    return `<div class="${cls}" data-type="session_summary"${dk}>${del}<div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }
   if (c.kind === 'antipattern') {
     // Structured like a summary: title heading, the terse rule as the lead, then the
     // narrative's "Label: text" lines as titled sections.
     const rule = (c.facts && c.facts[0]) || c.subtitle || '';
     const ruleHTML = rule ? `<div class="subtitle">${esc(rule)}</div>` : '';
-    return `<div class="${cls}" data-type="antipattern"><div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${ruleHTML}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
+    return `<div class="${cls}" data-type="antipattern"${dk}>${del}<div class="chead">${badge(c)}${spill}</div><div class="cinner">${title}${ruleHTML}${summaryHTML(c)}${filesHTML(c)}${meta}</div></div>`;
   }
   const facts = `<ul class="facts">${(c.facts||[]).map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
   const narr = c.narrative ? `<div class="narr">${esc(c.narrative)}</div>` : '';
   const toggles = `<div class="toggles"><button class="toggle" data-v="facts">facts</button>`
     + (c.narrative ? `<button class="toggle" data-v="narr">narrative</button>` : '') + `</div>`;
-  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"><div class="chead">${badge(c)}${spill}${toggles}</div><div class="cinner">${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div></div>`;
+  return `<div class="${cls}" data-type="${esc(c.type||'discovery')}"${dk}>${del}<div class="chead">${badge(c)}${spill}${toggles}</div><div class="cinner">${title}${subtitle}${facts}${narr}${filesHTML(c)}${meta}</div></div>`;
 }
 async function fetchFacts(extra='') {
   const pk = $('#project').value, q = $('#q').value.trim();
@@ -321,8 +330,24 @@ async function loadMore() {
   }
   loading = false;
 }
-// facts/narrative toggles (memory), and click-to-expand a chunk's body (index).
+// facts/narrative toggles (memory), delete-one-memory (trash icon), and click-to-expand a chunk (index).
 $('#list').addEventListener('click', async e => {
+  const trash = e.target.closest('.del');
+  if (trash) {
+    const card = trash.closest('.card'), key = card?.dataset.key;
+    if (!key) return;
+    const lead = card.querySelector('.title, .subtitle, .prompt')?.textContent?.trim() || '';
+    const preview = lead ? `\\n\\n"${lead.slice(0, 140)}${lead.length > 140 ? '…' : ''}"` : '';
+    if (!confirm(`Delete this memory?${preview}\\n\\nThis permanently removes it (and any facts grouped with it). This cannot be undone.`)) return;
+    await fetch('/api/delete_memory', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ key }),
+    });
+    card.remove();
+    seen.delete(key);
+    loadProjects();  // refresh the per-tab counts in the dropdown
+    return;
+  }
   const btn = e.target.closest('.toggle');
   if (btn) {
     const section = btn.closest('.card').querySelector(btn.dataset.v === 'narr' ? '.narr' : '.facts');
@@ -734,31 +759,39 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "{}")
 
     def do_POST(self) -> None:  # noqa: N802
-        """The only write route: delete every trace of one project.
+        """The viewer's write routes: delete a whole project, or one memory (card).
 
-        The viewer is otherwise read-only; this single mutating endpoint is guarded by
-        an explicit browser-side confirmation and bound to localhost. Any other path or
-        a malformed body is a 404 / 400 — never a silent write.
+        The viewer is otherwise read-only; these are the only mutating endpoints, each
+        guarded by an explicit browser-side confirmation and bound to localhost. Any other
+        path or a malformed body is a 404 / 400 — never a silent write.
         """
         parsed = urlparse(self.path)
-        if parsed.path != "/api/delete_project":
+        if parsed.path not in ("/api/delete_project", "/api/delete_memory"):
             self._send(404, "{}")
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
             payload = json.loads(self.rfile.read(length) or b"{}")
-            project_key = (payload.get("project") or "").strip()
         except (ValueError, TypeError):
             self._send(400, json.dumps({"error": "bad request"}))
             return
-        if not project_key:
-            self._send(400, json.dumps({"error": "project required"}))
-            return
         cfg = get_config()
         store = Store(cfg.db_path)
-        counts = store.delete_project(project_key)
-        store.close()
-        self._send(200, json.dumps({"deleted": counts}))
+        try:
+            if parsed.path == "/api/delete_project":
+                project_key = (payload.get("project") or "").strip()
+                if not project_key:
+                    self._send(400, json.dumps({"error": "project required"}))
+                    return
+                self._send(200, json.dumps({"deleted": store.delete_project(project_key)}))
+            else:  # /api/delete_memory — one card (observation group or single fact) by key
+                key = (payload.get("key") or "").strip()
+                if not key:
+                    self._send(400, json.dumps({"error": "key required"}))
+                    return
+                self._send(200, json.dumps({"deleted": store.delete_memory(key)}))
+        finally:
+            store.close()
 
     @staticmethod
     def _index_project(store, project_key: str) -> dict:

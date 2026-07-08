@@ -1344,3 +1344,22 @@ class Store:
         cur = self.db.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", tuple(fact_ids))
         self.db.commit()
         return cur.rowcount
+
+    def delete_memory(self, key: str) -> int:
+        """Hard-delete one viewer 'memory' (card) by its key.
+
+        A card's key is its ``observation_id`` (a group of atomic facts distilled together)
+        or, for an ungrouped fact, its ``id`` — so this removes the whole observation group
+        or the single fact. FTS stays in sync via the delete trigger; orphaned ``fact_edges``
+        (spreading-activation links whose endpoints are gone) are swept afterwards. Returns
+        the number of fact rows removed.
+        """
+        if not key:
+            return 0
+        with self.db:
+            cur = self.db.execute("DELETE FROM facts WHERE observation_id = ? OR id = ?", (key, key))
+            self.db.execute(
+                "DELETE FROM fact_edges WHERE src_id NOT IN (SELECT id FROM facts) "
+                "OR dst_id NOT IN (SELECT id FROM facts)"
+            )
+        return cur.rowcount
