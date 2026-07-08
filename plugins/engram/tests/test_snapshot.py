@@ -9,7 +9,13 @@ from dataclasses import replace
 from pathlib import Path
 
 from core.config import get_config
-from core.ports.snapshot import PageView, SnapshotGateway, StubSnapshotter, get_snapshotter
+from core.ports.snapshot import (
+    PageView,
+    SnapshotGateway,
+    StubSnapshotter,
+    get_snapshotter,
+    render_page_view,
+)
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent  # plugins/engram
 
@@ -86,6 +92,34 @@ class CoreImportsCleanTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class RenderPageViewTests(unittest.TestCase):
+    def test_non_empty_uncapped(self):
+        dto = render_page_view(PageView(text="heading X", url="u"), max_chars=1000)
+        self.assertFalse(dto["empty"])
+        self.assertFalse(dto["truncated"])
+        self.assertEqual(dto["text"], "heading X")
+        self.assertEqual(dto["url"], "u")
+        self.assertEqual(dto["chars"], len("heading X"))
+
+    def test_empty_is_null_object(self):
+        dto = render_page_view(PageView(text="   \n"), max_chars=1000)
+        self.assertTrue(dto["empty"])
+        self.assertEqual(dto["text"], "")
+        self.assertEqual(dto["chars"], 0)
+        self.assertFalse(dto["truncated"])
+
+    def test_caps_at_max_chars(self):
+        dto = render_page_view(PageView(text="a" * 500), max_chars=100)
+        self.assertTrue(dto["truncated"])
+        self.assertIn("[truncated]", dto["text"])
+        self.assertLessEqual(len(dto["text"]), 100 + len("\n… [truncated]"))
+
+    def test_zero_max_chars_disables_cap(self):
+        dto = render_page_view(PageView(text="abc"), max_chars=0)
+        self.assertFalse(dto["truncated"])
+        self.assertEqual(dto["text"], "abc")
 
 
 if __name__ == "__main__":

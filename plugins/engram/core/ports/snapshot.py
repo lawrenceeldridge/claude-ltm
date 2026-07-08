@@ -112,3 +112,19 @@ def get_snapshotter(cfg) -> SnapshotGateway:
         except Exception as exc:  # construction/import failure — fall back to the stub
             print(f"[engram] playwright snapshotter unavailable ({exc}); using stub", file=sys.stderr)
     return StubSnapshotter()
+
+
+def render_page_view(view: PageView, max_chars: int) -> dict:
+    """Shape a PageView into the compact tool-response DTO (Null Object + cap).
+
+    Caps the a11y text at ``max_chars`` — the token guard, mirroring the
+    ``*_max_chars`` family. An empty view yields an empty DTO (no page content,
+    never a placeholder), so a failed or blank snapshot costs almost nothing.
+    """
+    if view.is_empty:
+        return {"empty": True, "url": view.url, "chars": 0, "truncated": False, "text": ""}
+    text = view.text
+    truncated = 0 < max_chars < len(text)
+    if truncated:
+        text = text[:max_chars].rstrip() + "\n… [truncated]"
+    return {"empty": False, "url": view.url, "chars": len(text), "truncated": truncated, "text": text}
