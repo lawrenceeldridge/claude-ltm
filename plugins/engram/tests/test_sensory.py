@@ -174,6 +174,36 @@ class SummarizeSnapshotTests(unittest.TestCase):
         self.assertLessEqual(len(summarize_snapshot("u", text, max_len=60)), 60)
 
 
+class ViewerStoreTests(unittest.TestCase):
+    """The Store queries backing the viewer's Sensory tab (dropdown count + card delete)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="engram-sensory-viewer-")
+        self.store = Store(Path(self.tmp) / "m.db")
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_sensory_counts_per_project(self):
+        self.store.add_sensory("a", "s", "u1", "x")
+        self.store.add_sensory("a", "s", "u2", "y")
+        self.store.add_sensory("b", "s", "u1", "z")
+        counts = self.store.sensory_counts()
+        self.assertEqual(counts.get("a"), 2)
+        self.assertEqual(counts.get("b"), 1)
+
+    def test_delete_sensory_removes_one(self):
+        sid = self.store.add_sensory("a", "s", "u1", "x")
+        self.store.add_sensory("a", "s", "u2", "y")
+        self.assertEqual(self.store.delete_sensory(sid), 1)
+        rows = self.store.sensory_rows("a")
+        self.assertEqual([r["url"] for r in rows], ["u2"])
+
+    def test_delete_sensory_missing_is_noop(self):
+        self.assertEqual(self.store.delete_sensory("nope"), 0)
+        self.assertEqual(self.store.delete_sensory(""), 0)
+
+
 class PromoteSensoryTests(unittest.TestCase):
     def _setup(self, promote_after: int = 2):
         tmp = tempfile.mkdtemp(prefix="engram-sensory-promote-")

@@ -825,6 +825,21 @@ class Store:
         self.db.commit()
         return deleted
 
+    def sensory_counts(self) -> dict[str, int]:
+        """Per-project sensory-snapshot count for the viewer's Sensory panel."""
+        return {
+            r["project_key"]: r["c"]
+            for r in self.db.execute("SELECT project_key, COUNT(*) AS c FROM sensory GROUP BY project_key")
+        }
+
+    def delete_sensory(self, sensory_id: str) -> int:
+        """Hard-delete one sensory snapshot by id (the viewer's Sensory-card trash). Returns rows removed."""
+        if not sensory_id:
+            return 0
+        cur = self.db.execute("DELETE FROM sensory WHERE id = ?", (sensory_id,))
+        self.db.commit()
+        return cur.rowcount
+
     def active_antipatterns(self, project_key: str) -> list[sqlite3.Row]:
         """Active anti-pattern facts for a key — the recall union (global key) and the
         'existing anti-patterns' fed to the extraction prompt both read this."""
