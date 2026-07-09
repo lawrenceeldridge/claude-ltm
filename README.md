@@ -32,6 +32,14 @@ memory lifecycle on top, drawn from the **Atkinson–Shiffrin multi-store model*
 the **Active Systems Consolidation Hypothesis** (details, and the honest limits of the
 mapping, in [DESIGN.md](DESIGN.md)):
 
+- **Sensory register (intake)** — the fleeting first stage every perception enters: page
+  accessibility snapshots (from the browser tools, via a `PostToolUse` hook) and the
+  conversation delta at capture. It decays fast (capacity + TTL) unless *attention* selects
+  it — a re-perceived page, or a distillation-worthy turn. Attention then transfers it onward
+  **by modality**: a snapshot into the **index** (a durable `snapshot` chunk), conversation
+  into **facts** via distillation. One register for all input, two exits — mirroring the
+  Atkinson–Shiffrin structure (a single sensory register feeding a modality-columned store).
+  engram never *takes* snapshots; it consumes the ones the browser tools already produce.
 - **Recency decay** — a fact's rank score decays exponentially with age
   (`half_life_days`) unless reinforced.
 - **Rehearsal & retrieval** — two complementary ways a fact promotes from the
@@ -76,6 +84,10 @@ serves ranked outlines:
 - **Kept current** — `SessionStart` auto-indexes (single-flight, file-capped), and
   a `PostToolUse` hook re-indexes each file you Edit/Write so the outline never
   drifts from disk.
+- **Snapshots too** — a third kind alongside doc sections and code symbols: page
+  accessibility snapshots the browser tools produce, promoted from the sensory register
+  and searchable like the rest (freshness is age-based — a URL isn't a file on disk). Scope
+  a search by kind (`docs` / `code` / `snapshots`).
 
 ## Memory-first enforcement (`ENGRAM_ENFORCE`)
 
@@ -114,6 +126,7 @@ claude-engram/
     │   ├── prefer_memory.py            #   PreToolUse — memory-first guard (ENGRAM_ENFORCE)
     │   ├── mark_consulted.py           #   PostToolUse — records that memory was consulted
     │   ├── index_edit.py               #   PostToolUse — re-index edited files
+    │   ├── index_snapshot.py           #   PostToolUse — record page snapshots into the sensory register
     │   ├── credit_read.py              #   PostToolUse — credit bounded reads of indexed files (ledger)
     │   ├── index_docs.py               #   SessionStart — auto-index the project
     │   ├── capture.py                  #   Stop/SessionEnd/PreCompact — detached capture + summary
@@ -282,6 +295,20 @@ Set via `userConfig` (or `ENGRAM_*` env):
 | `refine_keep_max` | `20000` | keep only the top-N facts by retention score, prune the rest (reversible) — ships on as a generous idempotent growth ceiling (0 = off) |
 | `refine_prune_percentile` | `0` | prune the lowest-retention facts each pass — a value in `(0,1)` is a self-limiting percentile of the active set (`0.1` = drop the weakest 10%), a value `≥1` is an absolute score floor. Off by default: it forgets every pass and a good rate is store-dependent (0 = off) |
 | `purge_horizon_days` | `0` | hard-delete facts archived longer than this, then `VACUUM`. Off by default: the only irreversible lever (0 = off) |
+
+### Sensory register — intake
+
+The fleeting first stage all perception enters (page snapshots + conversation), before
+attention transfers the worthy parts onward (snapshots → index, conversation → facts). A
+separate, capacity- and TTL-bounded table that never touches recall. Set via `userConfig`
+(or `ENGRAM_*` env):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sensory_enabled` | `true` | record perception into the register — page snapshots via a `PostToolUse` hook + the conversation delta at capture; promotion (embedding) runs in the detached worker |
+| `attention_window_seconds` | `300` | window within which re-perceiving the same page counts as *attention* (which promotes it) — the A-S selective read-out, not rehearsal |
+| `sensory_capacity` | `64` | max live perceptions per project before the oldest unattended ones decay (0 = unbounded) |
+| `sensory_ttl_seconds` | `900` | how long an unattended perception lives before it decays; decayed tombstones are purged past this age (0 = no TTL decay) |
 
 ### Durable work queue — MemoryBus (inproc / NATS)
 
