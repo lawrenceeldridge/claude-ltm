@@ -18,6 +18,7 @@ from core.domain.confidence import compute_confidence
 from core.domain.entities import extract_entities
 from core.domain.lexical import has_overlap
 from core.domain.quantize import cosine, dequantize_int8, pack_bits, quantize_int8
+from core.domain.sensory import normalize_url, should_promote
 from core.ports.distill import (
     LLM_DISTILLERS,
     DistilledFact,
@@ -736,3 +737,64 @@ def recall_structured(
     except sqlite3.Error:
         pass
     return result
+
+
+# --- Sensory register: visual intake (SR) and promotion into the index (SR -> LTS-visual) ---
+
+
+def record_visual_perception(
+    store: Store, cfg: Config, project: Project, url: str | None, text: str, now: float
+) -> dict:
+    """Intake a visual perception (a page a11y snapshot) into the sensory register and apply the
+    Atkinson-Shiffrin **attention** gate.
+
+    Attention here is *re-perception*, not rehearsal: if the agent already perceived this page
+    within the attention window, this repeat visit marks that page's live rows (and this one)
+    ``attended`` — which promotes them into the index at the next detached capture. "Same page"
+    is matched by normalised URL when one is known, else by identical content (the content-hash
+    id collides on an identical re-perception). Pure attention decision (``normalize_url``) plus
+    Store I/O only — NO embedding here; promotion/embedding runs later in the capture worker.
+
+    Returns ``{"id": <sensory id>, "attended": bool}``.
+    """
+    pk = project["key"]
+    target = normalize_url(url or "")
+    window = cfg.attention_window_seconds
+    sid = store.sensory_id(pk, "visual", url or "", text)
+    # A prior live perception of the same page (before this intake) is the re-perception signal.
+    prior = [
+        r["id"]
+        for r in store.sensory_rows(pk)
+        if r["modality"] == "visual"
+        and r["id"] != sid
+        and target
+        and normalize_url(r["url"] or "") == target
+        and (now - r["created_at"]) <= window
+    ]
+    repeat_content = store.sensory_get(sid) is not None  # this exact perception is already registered
+    store.add_sensory(pk, "visual", text, url=url or None, now=now)
+    attended = bool(prior) or repeat_content
+    if attended:
+        for rid in {*prior, sid}:
+            store.mark_attended(rid)
+    return {"id": sid, "attended": attended}
+
+
+def promote_visual_perceptions(
+    store: Store, embedder: EmbeddingGateway, cfg: Config, project: Project, now: float
+) -> int:
+    """Promote attended visual perceptions from the sensory register into the index — the A-S
+    SR->LTS(visual) transfer. Runs in the detached capture worker (this is where the snapshot is
+    chunked + embedded, never on the intake hook). Each promoted perception then leaves the live
+    register (its ``decayed_at`` is stamped). Returns the number promoted."""
+    from core.index.indexer import index_snapshot
+
+    pk = project["key"]
+    promoted = 0
+    for row in store.sensory_rows(pk):  # live rows only
+        if row["modality"] != "visual" or not should_promote(row):
+            continue
+        index_snapshot(store, embedder, cfg, project, row["url"] or "", row["text"], now=now)
+        store.mark_sensory_decayed(row["id"], now)  # transferred out of the register into the index
+        promoted += 1
+    return promoted

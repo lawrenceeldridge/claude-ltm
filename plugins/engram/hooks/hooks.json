@@ -67,6 +67,17 @@
         ]
       },
       {
+        "matcher": ".*(take_snapshot|browser_snapshot).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/index_snapshot.py"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
