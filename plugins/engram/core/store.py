@@ -994,6 +994,25 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    @staticmethod
+    def sensory_id(project_key: str, modality: str, url: str, text: str) -> str:
+        """Content-addressed id for a sensory perception — the same id ``add_sensory`` assigns,
+        so the intake shell can ask "is this exact perception already registered?" before insert."""
+        return _sensory_id(project_key, modality, url or "", text)
+
+    def sensory_get(self, sensory_id: str) -> sqlite3.Row | None:
+        """One sensory row by id, or None."""
+        return self.db.execute("SELECT * FROM sensory WHERE id = ?", (sensory_id,)).fetchone()
+
+    def mark_sensory_decayed(self, sensory_id: str, now: float | None = None) -> None:
+        """Mark a perception as having left the live register — decayed OR promoted into the
+        durable store. Sets ``decayed_at`` (once; a no-op on an already-departed row)."""
+        self.db.execute(
+            "UPDATE sensory SET decayed_at = ? WHERE id = ? AND decayed_at IS NULL",
+            (_now(now), sensory_id),
+        )
+        self.db.commit()
+
     def consolidation_counts(self) -> dict[str, int]:
         """Per-project count for the viewer's Consolidation panel: archived ('forgotten')
         facts plus pending work-queue items — the two populations that panel shows."""

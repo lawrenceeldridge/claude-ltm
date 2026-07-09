@@ -122,6 +122,19 @@ def _run_worker(payload_path: str) -> None:
             store.dead_stale(cfg.bus_dead_after)
         except Exception:
             pass
+        # Sensory register (visual): promote attended perceptions into the index (the visual
+        # long-term-store column), then decay/purge the rest. Embedding happens HERE in the
+        # detached worker — never on the intake hook. Best-effort: never lose a capture over it.
+        if cfg.sensory_enabled:
+            try:
+                import time
+
+                from core.service import promote_visual_perceptions
+
+                promote_visual_perceptions(store, embedder, cfg, project, time.time())
+                store.sweep_sensory(project["key"], cfg.sensory_capacity, cfg.sensory_ttl_seconds, time.time())
+            except Exception:
+                pass
         # Consolidation ("sleep") — run at session boundaries, not every turn (like sleep
         # itself): replay promotes recalled short-term facts, displacement caps STM, and
         # refine/purge prune only when enabled (default no-op). Best-effort: never lose a

@@ -25,3 +25,12 @@ def should_promote(row: Any) -> bool:
     ``row`` is any mapping with ``attended`` and ``decayed_at`` (a ``sqlite3.Row`` or dict).
     """
     return bool(row["attended"]) and row["decayed_at"] is None
+
+
+def normalize_url(url: str) -> str:
+    """Normalise a page URL for re-perception matching (the visual attention signal): drop the
+    fragment, the query string and any trailing slash, and lowercase — so ``/app``, ``/app/`` and
+    ``/app?tab=1#top`` all count as the same page. Pure; a heuristic for "did the agent return to
+    this page", not a canonicaliser."""
+    u = (url or "").strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    return u.lower()
