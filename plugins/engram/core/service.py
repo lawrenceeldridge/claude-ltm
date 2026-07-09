@@ -441,6 +441,17 @@ def capture_transcript_incremental(
     text, prompts, end = extract_incremental_parts(transcript_path, start)
     if end == start:
         return 0
+    # Verbal intake into the A-S sensory register: record the perceived conversation delta (in full
+    # — no cap) so ALL input enters one register (visual page snapshots + verbal conversation), per
+    # A-S Fig. 1. Distillation below is the *coding/attention* control process that transfers the
+    # worthy parts to facts (STS); this raw perception is transient (bounded by sensory capacity +
+    # TTL) and decays. ADDITIVE and fail-open: distillation still reads the FULL delta, so no context
+    # is lost and `facts` output stays byte-identical whether or not this record is made.
+    if cfg.sensory_enabled and text.strip():
+        try:
+            store.add_sensory(project["key"], "verbal", text, observation_id=session_id or None, now=time.time())
+        except Exception:
+            pass
     capture_prompts(store, embedder, cfg, project, session_id, prompts)
     inserted = capture_text(store, embedder, cfg, project, session_id, text) if text.strip() else 0
     store.set_capture_cursor(cursor_key, end)
