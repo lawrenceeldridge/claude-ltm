@@ -1210,40 +1210,60 @@ class Store:
         stamp = _now(now)
         with self.db:
             self.db.execute("DELETE FROM chunks WHERE project_key = ? AND source_path = ?", (project_key, source_path))
-            self.db.executemany(
-                "INSERT OR REPLACE INTO chunks "
-                "(id, project_key, source_path, kind, anchor, title, heading_path, level, "
-                " summary, body, byte_start, byte_end, content_hash, dim, scale, vec_int8, indexed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        c["id"],
-                        project_key,
-                        source_path,
-                        c.get("kind", "doc_section"),
-                        c["anchor"],
-                        c["title"],
-                        c["heading_path"],
-                        c["level"],
-                        c.get("summary") or None,
-                        c["body"],
-                        c["byte_start"],
-                        c["byte_end"],
-                        c["content_hash"],
-                        c["dim"],
-                        c["scale"],
-                        c["vec_int8"],
-                        stamp,
-                    )
-                    for c in chunks
-                ],
-            )
+            self._insert_chunk_rows(project_key, source_path, chunks, stamp)
             self.db.execute(
                 "INSERT INTO chunk_sources (project_key, source_path, file_hash, mtime_ns, indexed_at) "
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_key, source_path) DO UPDATE SET "
                 "file_hash = excluded.file_hash, mtime_ns = excluded.mtime_ns, indexed_at = excluded.indexed_at",
                 (project_key, source_path, file_hash, mtime_ns, stamp),
             )
+        return len(chunks)
+
+    def _insert_chunk_rows(self, project_key: str, source_path: str, chunks: list[dict], stamp: float) -> None:
+        """The shared chunk INSERT for both the file writer (replace_source_chunks) and the
+        snapshot writer (replace_snapshot_chunks) — the column list lives in exactly one place."""
+        self.db.executemany(
+            "INSERT OR REPLACE INTO chunks "
+            "(id, project_key, source_path, kind, anchor, title, heading_path, level, "
+            " summary, body, byte_start, byte_end, content_hash, dim, scale, vec_int8, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    c["id"],
+                    project_key,
+                    source_path,
+                    c.get("kind", "doc_section"),
+                    c["anchor"],
+                    c["title"],
+                    c["heading_path"],
+                    c["level"],
+                    c.get("summary") or None,
+                    c["body"],
+                    c["byte_start"],
+                    c["byte_end"],
+                    c["content_hash"],
+                    c["dim"],
+                    c["scale"],
+                    c["vec_int8"],
+                    stamp,
+                )
+                for c in chunks
+            ],
+        )
+
+    def replace_snapshot_chunks(self, project_key: str, url: str, chunks: list[dict], now: float | None = None) -> int:
+        """Swap the snapshot chunk(s) for a URL — the index's visual long-term-store column. Unlike
+        replace_source_chunks this writes NO chunk_sources row: a snapshot's source is a URL, not a
+        file on disk, so it is exempt from file drift-reconciliation (index_project reconciles the
+        filesystem against chunk_sources) and gets age-based freshness at read time. Delete-then-insert
+        scoped to kind='snapshot'. Returns the number of chunks written."""
+        stamp = _now(now)
+        with self.db:
+            self.db.execute(
+                "DELETE FROM chunks WHERE project_key = ? AND source_path = ? AND kind = 'snapshot'",
+                (project_key, url),
+            )
+            self._insert_chunk_rows(project_key, url, chunks, stamp)
         return len(chunks)
 
     def delete_source(self, project_key: str, source_path: str) -> None:
