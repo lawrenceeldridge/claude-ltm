@@ -169,6 +169,55 @@ def index_file(store: Store, embedder: EmbeddingGateway, cfg: Config, project: P
     return {"status": status, "chunks": n}
 
 
+def _snapshot_title(url: str, text: str) -> str:
+    """Best-effort title for a snapshot chunk — the URL identifies the page (the searchable
+    content is the embedded body, so this stays deliberately simple)."""
+    return (url or "page snapshot")[:200]
+
+
+def _snapshot_summary(text: str) -> str:
+    """One-line summary for a snapshot chunk: the first non-empty line of the a11y text."""
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    return first[:200]
+
+
+def index_snapshot(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    url: str,
+    text: str,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Index a page accessibility snapshot as a durable ``snapshot`` chunk — the index's visual
+    long-term-store column. A-S: a visual perception transfers straight to the visual store (no
+    verbal coding), so it lands in the index, never in the ``facts`` recall surface. Reuses the
+    chunk pipeline (embed + FTS + get_chunk); ``source_path`` is the URL and freshness is
+    age-based, not file-drift. One chunk per URL — the latest perception replaces the prior one.
+    Returns ``{status, chunks, content_hash}``.
+    """
+    body = (text or "").strip()
+    if not body:
+        return {"status": "empty", "chunks": 0}
+    unit = {
+        "anchor": "snapshot",
+        "kind": "snapshot",
+        "title": _snapshot_title(url, body),
+        "heading_path": url or "",
+        "level": 0,
+        "summary": _snapshot_summary(body),
+        "body": body,
+        "byte_start": 0,
+        "byte_end": len(body.encode()),
+    }
+    record = _record_from_unit(store, embedder, project, url or "", unit)
+    stamp = now if now is not None else time.time()
+    store.replace_snapshot_chunks(project["key"], url or "", [record], stamp)
+    return {"status": "indexed", "chunks": 1, "content_hash": record["content_hash"]}
+
+
 def index_project(
     store: Store,
     embedder: EmbeddingGateway,
@@ -287,27 +336,34 @@ def _build_chunks(
         summary = unit["summary"]
         if distiller is not None and not is_code:  # LLM summaries only add value for prose
             summary = _llm_summary(distiller, unit["heading_path"], unit["body"]) or summary
-        vec = embedder.embed_one(_embed_text(unit["title"], unit["heading_path"], summary, unit["body"]))
-        blob, scale = quantize_int8(vec)
-        records.append(
-            {
-                "id": store.chunk_id(project["key"], source_path, unit["anchor"]),
-                "kind": unit["kind"],
-                "anchor": unit["anchor"],
-                "title": unit["title"],
-                "heading_path": unit["heading_path"],
-                "level": unit["level"],
-                "summary": summary,
-                "body": unit["body"],
-                "byte_start": unit["byte_start"],
-                "byte_end": unit["byte_end"],
-                "content_hash": hashlib.sha256(unit["body"].encode()).hexdigest(),
-                "dim": len(vec),
-                "scale": scale,
-                "vec_int8": blob,
-            }
-        )
+        unit["summary"] = summary
+        records.append(_record_from_unit(store, embedder, project, source_path, unit))
     return records
+
+
+def _record_from_unit(store: Store, embedder: EmbeddingGateway, project: Project, source_path: str, unit: dict) -> dict:
+    """Embed one chunk unit and build its stored record — the embed+quantize step shared by the
+    file indexer (_build_chunks) and the snapshot indexer (index_snapshot). ``unit`` carries
+    anchor/kind/title/heading_path/level/summary/body/byte_start/byte_end; ``summary`` is used
+    as-is (any LLM summary is applied by the caller before this)."""
+    vec = embedder.embed_one(_embed_text(unit["title"], unit["heading_path"], unit["summary"], unit["body"]))
+    blob, scale = quantize_int8(vec)
+    return {
+        "id": store.chunk_id(project["key"], source_path, unit["anchor"]),
+        "kind": unit["kind"],
+        "anchor": unit["anchor"],
+        "title": unit["title"],
+        "heading_path": unit["heading_path"],
+        "level": unit["level"],
+        "summary": unit["summary"],
+        "body": unit["body"],
+        "byte_start": unit["byte_start"],
+        "byte_end": unit["byte_end"],
+        "content_hash": hashlib.sha256(unit["body"].encode()).hexdigest(),
+        "dim": len(vec),
+        "scale": scale,
+        "vec_int8": blob,
+    }
 
 
 def _llm_summary(distiller, heading_path: str, body: str) -> str:

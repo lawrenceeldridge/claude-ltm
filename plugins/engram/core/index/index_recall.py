@@ -15,6 +15,7 @@ it section-precisely against the live file. Freshness is file-level in search (o
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
 from core.config import Config
@@ -51,6 +52,16 @@ def _file_freshness(project_root: str, source_path: str, stored_hash: str) -> st
     except OSError:
         return "gone"
     return "fresh" if hashlib.sha256(data).hexdigest() == stored_hash else "edited"
+
+
+# A snapshot chunk's source is a URL, not a file on disk, so freshness is age-based, not drift:
+# a page capture simply ages out (the live page may have moved on) — it is never "edited"/"gone".
+_SNAPSHOT_FRESH_SECONDS = 86400.0  # captures under a day old read as fresh; older as stale
+
+
+def _snapshot_freshness(indexed_at: float | None, now: float) -> str:
+    """Age-based freshness for a snapshot chunk: fresh | stale (never file-drift)."""
+    return "fresh" if (now - (indexed_at or 0.0)) <= _SNAPSHOT_FRESH_SECONDS else "stale"
 
 
 def _diverse_pack(fused, rows: dict, max_chars: int) -> list[tuple]:
@@ -111,12 +122,17 @@ def search_index(
     rows = {r["id"]: r for r in store.chunk_rows(project["key"], kind=kind)}
     packed = _diverse_pack(fused, rows, max_chars)[:k]
 
+    now = time.time()
     fresh_cache: dict[str, str] = {}
     results = []
     for row, score in packed:
         sp = row["source_path"]
-        if sp not in fresh_cache:
-            fresh_cache[sp] = _file_freshness(project["path"], sp, _source_hash(store, project["key"], sp))
+        if row["kind"] == "snapshot":
+            fresh = _snapshot_freshness(row["indexed_at"], now)  # URL source — age-based, not file drift
+        else:
+            if sp not in fresh_cache:
+                fresh_cache[sp] = _file_freshness(project["path"], sp, _source_hash(store, project["key"], sp))
+            fresh = fresh_cache[sp]
         results.append(
             {
                 "anchor": row["anchor"],
@@ -126,7 +142,7 @@ def search_index(
                 "source_path": sp,
                 "summary": row["summary"] or "",
                 "score": round(float(score), 4),
-                "freshness": fresh_cache[sp],
+                "freshness": fresh,
             }
         )
     return {
