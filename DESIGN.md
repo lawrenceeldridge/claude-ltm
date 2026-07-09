@@ -178,7 +178,7 @@ memory-research models, made explicit on the *write side*, off the hot path.
 
 | Store / process | claude-engram |
 |---|---|
-| Sensory register (raw, fleeting; *attention* selects) | transcript + incremental capture cursor; **distillation is the attention gate** (`core/transcript.py`, `core/distill.py`) |
+| Sensory register (raw, fleeting; *attention* selects; **one register, all modalities**) | the `sensory` table (`core/store.py`) — page snapshots (visual) and conversation deltas (verbal) enter here first and decay on capacity/TTL; *attention* selects what transfers (`core/domain/sensory.py`, `core/service.py`) |
 | Short-term store (fresh, capacity-bounded, *displaced* when full) | `tier='stm'` facts; `stm_capacity` bounds the active STM set, `store.displace_stm` sheds the weakest |
 | Rehearsal (STM→LTM transfer) | inline `store.reinforce` + `store.promote` (freq ≥ `promote_after_freq`); batch `replay` promotes STM that was *retrieved* |
 | Long-term store (durable, semantic) | `tier='engram'` facts + decay + supersession + TTL |
@@ -196,6 +196,28 @@ fires two ways, from two independently-supported mechanisms, and claude-engram k
 
 Repetition and retrieval are complementary, so the two paths are deliberately **not**
 folded into one rule — each encodes a distinct memory mechanism.
+
+**One sensory register, all modalities (A-S Fig. 1).** The register is the single intake stage
+*every* input enters — page accessibility snapshots (from Chrome DevTools / Playwright MCP, via a
+`PostToolUse` hook) and the conversation delta at capture — mirroring Fig. 1's one
+modality-columned register feeding a modality-columned long-term store. engram never *takes*
+snapshots; it consumes the ones the browser tools already produce. **Attention** (a control
+process, *not* rehearsal — it never touches `freq`/`reinforce`) gates two exits:
+
+- **Verbal → SR → STS → LTS.** Conversation is *coded* (distilled) into facts; the STM tier is
+  the short-term store and consolidation the LTM transfer — the pipeline above. `sensory_enabled`
+  records the raw delta as a `verbal` observation *additively*, so distillation still reads the
+  full delta and `facts` output is byte-identical whether or not the register is on.
+- **Visual → SR → LTS directly.** A page snapshot resists verbal coding, so (A-S §III) it enters
+  the *visual* store directly — engram's index, as a `snapshot` chunk (`index_snapshot`), skipping
+  the facts pipeline: the SR→LTS dashed path in Fig. 1. Attention here is *re-perception* of the
+  same page (`record_visual_perception`, keyed on a normalised URL); promotion — the embedding —
+  runs in the detached capture worker, never on the hook. Freshness is age-based (a URL isn't a
+  file on disk), and snapshots never enter the `facts`/recall surface (modality isolation).
+
+This is the **structures vs control processes** split A-S §III draws: the register, `facts` and
+index are the permanent *structures*; attention, coding (distillation) and rehearsal are the
+transient, `Config`-tunable *control processes* over them.
 
 **Active Systems Consolidation Hypothesis + the Sequential Hypothesis** — an offline
 "sleep" pass (`core/consolidation/`) runs at session checkpoints (not every turn, like
