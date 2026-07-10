@@ -260,7 +260,24 @@ def index_project(
         elif status == "skipped":
             stats["skipped"] += 1
 
+    # Drift reconciliation: mark-and-sweep. Only delete sources that were actually scanned.
+    # When root ⊊ project_root (a scoped subtree index), `seen` only covers files under root,
+    # but indexed_sources covers the whole project. Deleting the difference would wipe everything
+    # outside the scoped scope (the environment/ regression: scoped index pruned 2990 chunks).
+    # Invariant: mark set (seen) and sweep set must cover the same universe. When scoped, only
+    # sweep files under root; when whole-project, sweep everything (fast-path, byte-identical).
+    scan_root = root.resolve()
+    project_root_resolved = project_root.resolve()
+    whole_project = scan_root == project_root_resolved
+
     for gone in store.indexed_sources(project["key"]) - seen:
+        if not whole_project:
+            try:
+                in_scope = (project_root / gone).resolve().is_relative_to(scan_root)
+            except (OSError, ValueError):
+                in_scope = False  # unresolvable path: keep it (safe direction, self-heals on next whole-project index)
+            if not in_scope:
+                continue
         store.delete_source(project["key"], gone)
         stats["deleted"] += 1
 
