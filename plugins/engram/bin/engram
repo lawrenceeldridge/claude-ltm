@@ -9,6 +9,7 @@ Subcommands:
   projects    list every project in the global store
   prune       delete all memory for the current project
   uninstall   uninstall the plugin, keeping memory (add --purge-data to remove it)
+  import      migrate memory from another store (e.g. claude-mem) into engram
   daemon      run the resident daemon (keeps the embedder warm)
   viewer      launch the localhost viewer
   stats       recall telemetry + token-savings ledger (cost vs saved, net)
@@ -460,6 +461,105 @@ def cmd_demo(_args) -> int:
     return 0
 
 
+def _import_resolver(store: Store, cfg, maps: dict[str, str]):
+    """Label → engram Project. `--map LABEL=/abs/path` wins; else an existing engram project
+    with that label (its stored key is reused); else None → the label is skipped, never guessed.
+
+    A `--map` path is run through `resolve_project` so it derives the *same* key engram would
+    use for that workspace — so migrated facts land under the live project's key.
+    """
+    existing = {
+        r["project_label"]: {"key": r["project_key"], "label": r["project_label"], "path": r["project_path"] or ""}
+        for r in store.projects()
+    }
+
+    def resolve(label: str):
+        if label in maps:
+            return resolve_project(None, cfg.markers, identity="workspace", project_dir=maps[label])
+        return existing.get(label)
+
+    return resolve
+
+
+def _print_import_plan(plan: dict, source: str) -> None:
+    if not plan.get("available"):
+        return
+    print(f"[dry-run] {source} → engram")
+    for label, info in plan["projects"].items():
+        print(f"  {label:24s} [{info['key']}]  {info['would_import']:>7,} fact(s) would import")
+    if plan["skipped"]:
+        print(f"  skipped (no mapping — pass --map {plan['skipped'][0]}=/abs/path): {', '.join(plan['skipped'])}")
+
+
+def _print_import_result(result: dict) -> None:
+    print("imported into engram:")
+    for label, info in result["projects"].items():
+        print(f"  {label:24s} [{info['key']}]  inserted {info['inserted']:,}, reinforced {info['reinforced']:,}")
+    if result["skipped"]:
+        print(f"  skipped (no mapping): {', '.join(result['skipped'])}")
+
+
+def _confirm_import(total: int) -> bool:
+    """Gate a real (non-dry) import. Requires an interactive TTY; otherwise --yes is mandatory."""
+    if not sys.stdin.isatty():
+        print(f"refusing to import {total:,} fact(s) without --yes in a non-interactive shell", file=sys.stderr)
+        return False
+    return input(f"import {total:,} fact(s) into engram? [y/N] ").strip().lower() in ("y", "yes")
+
+
+def cmd_import(args) -> int:
+    from core.migrate import import_memory_source
+    from core.ports.memory_source import get_memory_source
+
+    cfg = get_config()
+    store = Store(cfg.db_path)
+    embedder = get_embedder(cfg)
+    source = get_memory_source(args.source, db_path=args.db)
+    try:
+        if not source.available():
+            where = f" at {args.db}" if args.db else ""
+            print(f"no readable {args.source} store{where} — nothing to import", file=sys.stderr)
+            return 1
+
+        maps: dict[str, str] = {}
+        for entry in args.map or []:
+            if "=" not in entry:
+                print(f"ignoring --map {entry!r} (expected LABEL=/abs/path)", file=sys.stderr)
+                continue
+            label, path = entry.split("=", 1)
+            maps[label.strip()] = path.strip()
+        resolve = _import_resolver(store, cfg, maps)
+
+        # When not skipping the gate, show a dry-run plan first and confirm.
+        if args.dry_run or not args.yes:
+            plan = import_memory_source(store, embedder, cfg, source, resolve, only_label=args.project, dry_run=True)
+            _print_import_plan(plan, args.source)
+            if args.dry_run:
+                return 0
+            total = sum(p["would_import"] for p in plan["projects"].values())
+            if total == 0:
+                print("nothing to import (no mappable projects — see skipped above)")
+                return 0
+            if not _confirm_import(total):
+                print("aborted — no changes made")
+                return 1
+
+        def progress(counts: dict) -> None:
+            if counts["batches"] % 20 == 0:
+                print(f"  … {counts['inserted']:,} inserted / {counts['reinforced']:,} reinforced", file=sys.stderr)
+
+        result = import_memory_source(
+            store, embedder, cfg, source, resolve, only_label=args.project, batch=args.batch, progress=progress
+        )
+        _print_import_result(result)
+        scope = "" if args.project else " --all"
+        print(f"\n→ run 'engram consolidate{scope}' to compress the imported facts")
+        return 0
+    finally:
+        source.close()
+        store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engram", description="claude-engram memory CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -498,6 +598,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--purge-data", action="store_true", help="also delete the memory store + venv (explicit opt-in)")
     p.add_argument("--dry-run", action="store_true", help="print what would happen; change nothing")
     p.set_defaults(func=cmd_uninstall)
+
+    p = sub.add_parser("import", help="migrate memory from another store (e.g. claude-mem) into engram")
+    p.add_argument("source", choices=["claude-mem"], help="source store to import from")
+    p.add_argument("--db", help="path to the source store (default: resolved from its settings/env)")
+    p.add_argument("--project", metavar="LABEL", help="import only this source project label")
+    p.add_argument(
+        "--map",
+        action="append",
+        metavar="LABEL=/abs/path",
+        help="map a source label to an engram project path (repeatable); else an existing project with that label is reused",
+    )
+    p.add_argument("--dry-run", action="store_true", help="report what would import, per project; write nothing")
+    p.add_argument("--batch", type=int, default=256, help="embedding batch size (default: 256)")
+    p.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt (required in non-interactive shells)"
+    )
+    p.set_defaults(func=cmd_import)
 
     p = sub.add_parser("sweep", help="archive stale facts (TTL expiry)")
     add_cwd(p)

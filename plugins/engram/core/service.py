@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Callable, Iterable
 
 from core.config import Config
 from core.domain.confidence import compute_confidence
@@ -154,6 +155,86 @@ def add_facts(
     kind: str = "fact",
 ) -> int:
     return add_records(store, embedder, cfg, project, session_id, [DistilledFact(f) for f in facts], kind)
+
+
+def bulk_add_records(
+    store: Store,
+    embedder: EmbeddingGateway,
+    cfg: Config,
+    project: Project,
+    session_id: str,
+    records: Iterable[tuple[DistilledFact, float | None]],
+    *,
+    kind: str = "fact",
+    tier: str = "stm",
+    batch: int = 256,
+    progress: Callable[[dict[str, int]], None] | None = None,
+) -> dict[str, int]:
+    """Bulk sibling of :func:`add_records` for large one-shot imports (e.g. a store migration).
+
+    Built for volume: it **batches the embedding call** (the dominant cost) and **defers all
+    cross-fact work** — near-duplicate superseding (``_find_superseded``) and spread-activation
+    edges (``_record_edges``) — to the consolidation pass. That keeps the import ~O(n) rather
+    than :func:`add_records`' per-insert whole-project supersede scan, which is ~O(n²) at 10⁵
+    facts. Superseding/edges are ranking levers, not correctness; ``engram consolidate`` recomputes
+    duplicate clusters afterward.
+
+    Idempotent like :func:`add_records`: a fact already in the store — or a duplicate earlier in
+    the same run — reinforces (and promotes STM→LTM past ``promote_after_freq``) instead of
+    duplicating. Each record carries an optional original timestamp; ``None`` falls back to now, so
+    history can be imported with its real ages. ``progress`` is invoked with a counts snapshot after
+    each batch. Returns ``{"inserted", "reinforced", "batches"}``.
+    """
+    now = time.time()
+    counts = {"inserted": 0, "reinforced": 0, "batches": 0}
+    seen: set[str] = set()
+
+    def _flush(pending: list[tuple[DistilledFact, float | None]]) -> None:
+        if not pending:
+            return
+        vecs = embedder.embed([rec.text for rec, _ in pending])
+        for (rec, ts), vec in zip(pending, vecs):
+            blob, scale = quantize_int8(vec)
+            added = store.add(
+                project=project,
+                session_id=session_id,
+                kind=kind,
+                text=rec.text,
+                vec_int8=blob,
+                scale=scale,
+                dim=len(vec),
+                vec_bits=pack_bits(vec),
+                importance=min(1.0, len(rec.text) / 240.0),
+                created_at=ts if ts is not None else now,
+                title=rec.title,
+                subtitle=rec.subtitle,
+                narrative=rec.narrative,
+                files=rec.files,
+                type=rec.type,
+                observation_id=rec.observation_id,
+                tier=tier,
+            )
+            counts["inserted" if added else "reinforced"] += 1
+        counts["batches"] += 1
+        if progress is not None:
+            progress(dict(counts))
+
+    pending: list[tuple[DistilledFact, float | None]] = []
+    for rec, ts in records:
+        fact_id = store.fact_id(project["key"], rec.text)
+        if fact_id in seen or store.exists(fact_id):
+            freq = store.reinforce(fact_id, now)
+            if freq >= cfg.promote_after_freq:
+                store.promote(fact_id, now)
+            counts["reinforced"] += 1
+            continue
+        seen.add(fact_id)
+        pending.append((rec, ts))
+        if len(pending) >= batch:
+            _flush(pending)
+            pending = []
+    _flush(pending)
+    return counts
 
 
 def capture_text(
