@@ -193,6 +193,7 @@ engram core                show the stable session-start memory block
 engram projects            list every project in the global store
 engram prune               delete all memory for the current project
 engram uninstall           uninstall the plugin, KEEPING memory (--purge-data to also remove it; --dry-run to preview)
+engram import claude-mem   migrate memory from a claude-mem store into engram (--db/--project/--map/--dry-run/--batch/--yes)
 engram sweep [--all]       archive stale facts (TTL expiry; --days N to override)
 engram consolidate [--all] run the sleep pass: promote recalled STM, integrate near-duplicates + prune (if enabled)
 engram queue [--all]       inspect the durable work queue (rescue backlog + dead-letter); --purge-dead/--purge-stage/--purge-all to clear
@@ -214,6 +215,37 @@ real file-minus-span bytes) plus *estimated* (each `ok` recall verdict scored as
 avoided grep+read, heuristic). The **net** is saved − cost. Passive injection that
 merely *might* have saved a search isn't credited, so net is a conservative floor,
 not a marketing number.
+
+### Importing from claude-mem
+
+`engram import claude-mem` migrates an existing **claude-mem** store into engram's own
+store — one-way, **idempotent**, and **read-only** on the source. Each claude-mem
+*observation* fans out to one fact per entry in its `facts[]` (carrying
+title/subtitle/narrative/type/files), and each non-empty *session-summary* field becomes a
+fact; original timestamps are preserved. The source DB path is resolved from claude-mem's
+own settings/env (override with `--db`).
+
+claude-mem records only a project *label*, so you map it to an engram project **path**
+(which derives the key). Precedence: `--map LABEL=/abs/path` > an existing engram project
+with that label > **skipped** (a label is never written under a guessed key).
+
+```bash
+# 1. Preview — no writes; resolves the target key and counts per project
+engram import claude-mem --project ukh-world --map ukh-world=/path/to/ukh-world --dry-run
+# 2. Import (--yes is required in a non-interactive shell; otherwise it prompts)
+engram import claude-mem --project ukh-world --map ukh-world=/path/to/ukh-world --yes
+# 3. Compress the raw import — collapse near-duplicates, displace/purge weak STM
+engram consolidate          # run in the target workspace (or --all for every project)
+```
+
+Re-runs are safe: fact IDs are content hashes, so an already-imported fact reinforces
+instead of duplicating. Facts land in **STM**; superseding and spread-activation edges are
+deferred to `consolidate` (a raw import can be large — ~10⁵ facts — so the first
+consolidation is the expensive one; run it per-project first to bound blast radius).
+
+> **TTL caveat.** Because original timestamps are preserved, if you have set `ttl_days > 0`
+> a `sweep` will archive imported facts older than that window immediately. `ttl_days` is
+> `0` (off) by default — keep it off during and after a historical import.
 
 ### Uninstalling (your memory is kept by default)
 
