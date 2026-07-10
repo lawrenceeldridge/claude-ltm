@@ -212,8 +212,8 @@ class IndexerAndRecallTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
-    def _index(self) -> dict:
-        return index_project(self.store, self.embedder, self.cfg, self.project, self.repo.name)
+    def _index(self, root: str | None = None) -> dict:
+        return index_project(self.store, self.embedder, self.cfg, self.project, root or self.repo.name)
 
     def test_index_creates_chunks(self):
         stats = self._index()
@@ -239,6 +239,47 @@ class IndexerAndRecallTests(unittest.TestCase):
         stats = self._index()
         self.assertEqual(stats["deleted"], 1)
         self.assertIsNone(self.store.get_chunk(self.project["key"], "extra"))
+
+    def test_scoped_index_preserves_out_of_scope(self):
+        # Regression: a scoped subtree reindex must NOT prune entries outside the scanned root.
+        # Reindexing <repo>/environment/ was deleting every out-of-scope source (reported: 2990
+        # chunks wiped) because the drift-sweep spanned the whole project while `seen` only
+        # covered the scanned subtree. Asserted on source_path — the reconcile's unit of work
+        # (get_chunk-by-anchor would depend on slug derivation; indexed_sources is exact).
+        self._write("a/x.md", "# A X\ncontent in a\n")
+        self._write("b/y.md", "# B Y\ncontent in b\n")
+        self._index()  # whole-project index — both subtrees indexed
+        sources = self.store.indexed_sources(self.project["key"])
+        self.assertIn("a/x.md", sources)
+        self.assertIn("b/y.md", sources)
+
+        # Reindex only subtree a/ (scoped)
+        stats = self._index(root=str(Path(self.repo.name) / "a"))
+
+        # b/ (out of scope) survives untouched; nothing was pruned
+        sources_after = self.store.indexed_sources(self.project["key"])
+        self.assertIn("b/y.md", sources_after, "scoped index must not delete out-of-scope entries")
+        self.assertTrue(self.store.chunk_outline(self.project["key"], "b/y.md"))
+        self.assertIn("a/x.md", sources_after)
+        self.assertEqual(stats["deleted"], 0)
+        # a/ was rescanned (an unchanged file is skipped, not re-indexed — either counts as scanned).
+        self.assertGreaterEqual(stats["files"] + stats["skipped"], 1)
+
+    def test_scoped_index_prunes_within_scope(self):
+        # A scoped index must still reconcile deletions *within* the scanned root.
+        self._write("a/x.md", "# A X\ncontent in a\n")
+        self._write("a/z.md", "# A Z\ndelete me\n")
+        self._index()  # whole-project index
+        self.assertIn("a/z.md", self.store.indexed_sources(self.project["key"]))
+
+        os.unlink(Path(self.repo.name) / "a" / "z.md")  # delete a file inside the scoped root
+        stats = self._index(root=str(Path(self.repo.name) / "a"))
+
+        sources = self.store.indexed_sources(self.project["key"])
+        self.assertNotIn("a/z.md", sources, "scoped index must prune deleted in-scope files")
+        self.assertEqual(self.store.chunk_outline(self.project["key"], "a/z.md"), [])
+        self.assertIn("a/x.md", sources, "scoped index must keep in-scope files that still exist")
+        self.assertEqual(stats["deleted"], 1)
 
     def test_search_returns_outline_rows(self):
         self._index()
