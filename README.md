@@ -21,9 +21,11 @@ Two budgets are optimised separately (see [DESIGN.md](DESIGN.md)):
   The index returns outlines (qualname + signature + anchor), not file contents —
   you fetch one symbol's body on demand instead of reading whole files.
 - **Latency** — capture (and any LLM distillation) is fully detached: zero
-  interactive cost. Recall is brute-force cosine over quantised (int8) vectors,
-  sub-10ms for a personal store. An optional resident daemon keeps the embedding
-  model warm across the short-lived hook processes.
+  interactive cost. Recall is a brute-force cosine over quantised (int8) vectors —
+  sub-10ms for a personal store, and **numpy-vectorised** (numpy ships with the
+  `fastembed` extra) so it stays within the recall hook's budget even on a 10⁵-fact
+  store; it falls back to a pure-Python scan when numpy is absent. An optional
+  resident daemon keeps the embedding model warm across the short-lived hook processes.
 
 ## How memory behaves (cognitive model)
 
@@ -241,7 +243,9 @@ engram consolidate          # run in the target workspace (or --all for every pr
 Re-runs are safe: fact IDs are content hashes, so an already-imported fact reinforces
 instead of duplicating. Facts land in **STM**; superseding and spread-activation edges are
 deferred to `consolidate` (a raw import can be large — ~10⁵ facts — so the first
-consolidation is the expensive one; run it per-project first to bound blast radius).
+consolidation is the expensive one; run it per-project first to bound blast radius). A store
+that large stays recallable within the hook budget via the numpy-vectorised scan (see
+`scorer` in [Configuration](#configuration)).
 
 > **TTL caveat.** Because original timestamps are preserved, if you have set `ttl_days > 0`
 > a `sweep` will archive imported facts older than that window immediately. `ttl_days` is
@@ -274,6 +278,7 @@ or `ENGRAM_*` env vars for standalone use:
 | `embedding` | `hash` | `hash` (lexical stub, zero deps) or `fastembed` (real semantic model, self-provisions a venv) |
 | `embedding_model` | *(blank)* | fastembed model id; blank = `BAAI/bge-base-en-v1.5` (best measured recall) |
 | `embedding_truncate_dim` | `0` | Matryoshka truncation: keep the first N dims and re-normalise (0 = off). Only for Matryoshka-trained models (e.g. `nomic-ai/nomic-embed-text-v1.5`); changing it invalidates stored vectors — re-capture/re-index |
+| `scorer` | `auto` | recall similarity-scan backend: `auto` (numpy if importable, else pure-Python) / `python` / `numpy`. numpy vectorises the cosine scan (~100× faster) so large stores stay under the recall-hook budget; ships with the `fastembed` extra. Ranking is identical to the pure-Python scan |
 | `distiller` | `claude` | `claude` (headless `claude -p`, Haiku), `ollama` (local, zero-token), or `heuristic` (line extraction, no LLM) |
 | `distiller_model` | *(blank)* | claude: model alias (blank = `haiku`); ollama: model name (blank = `qwen2.5:3b`) |
 | `distiller_base_url` | `http://localhost:11434/v1` | OpenAI-compatible endpoint for the `ollama`/`http` distiller (ignored under `claude`) |
